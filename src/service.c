@@ -5275,9 +5275,6 @@ static const struct connman_ipconfig_ops service_ops = {
 static void setup_ip4config(struct connman_service *service, int index,
 			enum connman_ipconfig_method method)
 {
-	if (index < 0)
-		return;
-
 	service->ipconfig_ipv4 = connman_ipconfig_create(index,
 						CONNMAN_IPCONFIG_TYPE_IPV4);
 	if (service->ipconfig_ipv4 == NULL)
@@ -5292,9 +5289,6 @@ static void setup_ip4config(struct connman_service *service, int index,
 
 static void setup_ip6config(struct connman_service *service, int index)
 {
-	if (index < 0)
-		return;
-
 	service->ipconfig_ipv6 = connman_ipconfig_create(index,
 						CONNMAN_IPCONFIG_TYPE_IPV6);
 	if (service->ipconfig_ipv6 == NULL)
