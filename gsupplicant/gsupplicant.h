@@ -73,6 +73,8 @@ extern "C" {
 #define G_SUPPLICANT_PAIRWISE_TKIP	(1 << 1)
 #define G_SUPPLICANT_PAIRWISE_CCMP	(1 << 2)
 
+#define G_SUPPLICANT_MAX_FAST_SCAN	4
+
 typedef enum {
 	G_SUPPLICANT_MODE_UNKNOWN,
 	G_SUPPLICANT_MODE_INFRA,
@@ -131,6 +133,19 @@ struct _GSupplicantSSID {
 
 typedef struct _GSupplicantSSID GSupplicantSSID;
 
+struct _GSupplicantScanParams {
+	struct scan_ssid {
+		unsigned char ssid[32];
+		uint8_t ssid_len;
+	} ssids[G_SUPPLICANT_MAX_FAST_SCAN];
+
+	uint8_t num_ssids;
+
+	uint16_t freqs[G_SUPPLICANT_MAX_FAST_SCAN];
+};
+
+typedef struct _GSupplicantScanParams GSupplicantScanParams;
+
 /* global API */
 typedef void (*GSupplicantCountryCallback) (void *user_data);
 
@@ -155,6 +170,7 @@ int g_supplicant_interface_remove(GSupplicantInterface *interface,
 					GSupplicantInterfaceCallback callback,
 							void *user_data);
 int g_supplicant_interface_scan(GSupplicantInterface *interface,
+					GSupplicantScanParams *scan_data,
 					GSupplicantInterfaceCallback callback,
 							void *user_data);
 
@@ -181,6 +197,9 @@ const void *g_supplicant_interface_get_wps_ssid(GSupplicantInterface *interface,
 							unsigned int *ssid_len);
 GSupplicantWpsState g_supplicant_interface_get_wps_state(GSupplicantInterface *interface);
 unsigned int g_supplicant_interface_get_mode(GSupplicantInterface *interface);
+dbus_bool_t g_supplicant_interface_get_ready(GSupplicantInterface *interface);
+unsigned int g_supplicant_interface_get_max_scan_ssids(
+					GSupplicantInterface *interface);
 
 int g_supplicant_interface_enable_selected_network(GSupplicantInterface *interface,
 							dbus_bool_t enable);
@@ -199,6 +218,7 @@ const void *g_supplicant_network_get_ssid(GSupplicantNetwork *network,
 const char *g_supplicant_network_get_mode(GSupplicantNetwork *network);
 const char *g_supplicant_network_get_security(GSupplicantNetwork *network);
 dbus_int16_t g_supplicant_network_get_signal(GSupplicantNetwork *network);
+dbus_uint16_t g_supplicant_network_get_frequency(GSupplicantNetwork *network);
 dbus_bool_t g_supplicant_network_get_wps(GSupplicantNetwork *network);
 
 struct _GSupplicantCallbacks {

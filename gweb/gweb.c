@@ -32,6 +32,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <net/if.h>
 
 #include "giognutls.h"
 #include "gresolv.h"
@@ -97,7 +98,7 @@ struct web_session {
 };
 
 struct _GWeb {
-	gint ref_count;
+	int ref_count;
 
 	guint next_query_id;
 
@@ -228,7 +229,7 @@ GWeb *g_web_ref(GWeb *web)
 	if (web == NULL)
 		return NULL;
 
-	g_atomic_int_inc(&web->ref_count);
+	__sync_fetch_and_add(&web->ref_count, 1);
 
 	return web;
 }
@@ -238,7 +239,7 @@ void g_web_unref(GWeb *web)
 	if (web == NULL)
 		return;
 
-	if (g_atomic_int_dec_and_test(&web->ref_count) == FALSE)
+	if (__sync_fetch_and_sub(&web->ref_count, 1) != 1)
 		return;
 
 	flush_sessions(web);
@@ -910,6 +911,22 @@ static int connect_session_transport(struct web_session *session)
 	if (sk < 0)
 		return -EIO;
 
+	if (session->web->index > 0) {
+		char interface[IF_NAMESIZE];
+
+		memset(interface, 0, IF_NAMESIZE);
+
+		if (if_indextoname(session->web->index, interface) != NULL) {
+			if (setsockopt(sk, SOL_SOCKET, SO_BINDTODEVICE,
+						interface, IF_NAMESIZE) < 0) {
+				close(sk);
+				return -EIO;
+			}
+
+			debug(session->web, "Use interface %s", interface);
+		}
+	}
+
 	if (session->flags & SESSION_FLAG_USE_TLS) {
 		debug(session->web, "using TLS encryption");
 		session->transport_channel = g_io_channel_gnutls_new(sk);
@@ -1316,7 +1333,7 @@ GWebParser *g_web_parser_ref(GWebParser *parser)
 	if (parser == NULL)
 		return NULL;
 
-	g_atomic_int_inc(&parser->ref_count);
+	__sync_fetch_and_add(&parser->ref_count, 1);
 
 	return parser;
 }
@@ -1326,7 +1343,7 @@ void g_web_parser_unref(GWebParser *parser)
 	if (parser == NULL)
 		return;
 
-	if (g_atomic_int_dec_and_test(&parser->ref_count) == FALSE)
+	if (__sync_fetch_and_sub(&parser->ref_count, 1) != 1)
 		return;
 
 	g_string_free(parser->content, TRUE);

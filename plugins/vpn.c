@@ -66,27 +66,43 @@ struct vpn_driver_data {
 
 GHashTable *driver_hash = NULL;
 
-static int kill_tun(char *tun_name)
+static int stop_vpn(struct connman_provider *provider)
 {
+	struct vpn_data *data = connman_provider_get_data(provider);
+	struct vpn_driver_data *vpn_driver_data;
+	const char *name;
 	struct ifreq ifr;
 	int fd, err;
 
+	if (data == NULL)
+		return -EINVAL;
+
+	name = connman_provider_get_driver_name(provider);
+	if (name == NULL)
+		return -EINVAL;
+
+	vpn_driver_data = g_hash_table_lookup(driver_hash, name);
+
+	if (vpn_driver_data != NULL && vpn_driver_data->vpn_driver != NULL &&
+			vpn_driver_data->vpn_driver->flags == VPN_FLAG_NO_TUN)
+		return 0;
+
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
-	sprintf(ifr.ifr_name, "%s", tun_name);
+	sprintf(ifr.ifr_name, "%s", data->if_name);
 
 	fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
 	if (fd < 0) {
 		err = -errno;
 		connman_error("Failed to open /dev/net/tun to device %s: %s",
-			      tun_name, strerror(errno));
+			      data->if_name, strerror(errno));
 		return err;
 	}
 
 	if (ioctl(fd, TUNSETIFF, (void *)&ifr)) {
 		err = -errno;
 		connman_error("Failed to TUNSETIFF for device %s to it: %s",
-			      tun_name, strerror(errno));
+			      data->if_name, strerror(errno));
 		close(fd);
 		return err;
 	}
@@ -94,12 +110,12 @@ static int kill_tun(char *tun_name)
 	if (ioctl(fd, TUNSETPERSIST, 0)) {
 		err = -errno;
 		connman_error("Failed to set tun device %s nonpersistent: %s",
-			      tun_name, strerror(errno));
+			      data->if_name, strerror(errno));
 		close(fd);
 		return err;
 	}
 	close(fd);
-	DBG("Killed tun device %s", tun_name);
+	DBG("Killed tun device %s", data->if_name);
 	return 0;
 }
 
@@ -117,17 +133,19 @@ void vpn_died(struct connman_task *task, int exit_code, void *user_data)
 
 	state = data->state;
 
-	kill_tun(data->if_name);
+	stop_vpn(provider);
 	connman_provider_set_data(provider, NULL);
 	connman_rtnl_remove_watch(data->watch);
 
 vpn_exit:
 	if (state != VPN_STATE_READY && state != VPN_STATE_DISCONNECT) {
 		const char *name;
-		struct vpn_driver_data *vpn_data;
+		struct vpn_driver_data *vpn_data = NULL;
 
 		name = connman_provider_get_driver_name(provider);
-		vpn_data = g_hash_table_lookup(driver_hash, name);
+		if (name != NULL)
+			vpn_data = g_hash_table_lookup(driver_hash, name);
+
 		if (vpn_data != NULL &&
 				vpn_data->vpn_driver->error_code != NULL)
 			ret = vpn_data->vpn_driver->error_code(exit_code);
@@ -141,9 +159,32 @@ vpn_exit:
 
 	connman_provider_set_index(provider, -1);
 	connman_provider_unref(data->provider);
+
+	g_free(data->if_name);
 	g_free(data);
 
 	connman_task_destroy(task);
+}
+
+int vpn_set_ifname(struct connman_provider *provider, const char *ifname)
+{
+	struct vpn_data *data = connman_provider_get_data(provider);
+	int index;
+
+	if (ifname == NULL || data == NULL)
+		return  -EIO;
+
+	index = connman_inet_ifindex(ifname);
+	if (index < 0)
+		return  -EIO;
+
+	if (data->if_name != NULL)
+		g_free(data->if_name);
+
+	data->if_name = (char *)g_strdup(ifname);
+	connman_provider_set_index(provider, index);
+
+	return 0;
 }
 
 static void vpn_newlink(unsigned flags, unsigned change, void *user_data)
@@ -161,7 +202,7 @@ static void vpn_newlink(unsigned flags, unsigned change, void *user_data)
 	data->flags = flags;
 }
 
-static void vpn_notify(struct connman_task *task,
+static DBusMessage *vpn_notify(struct connman_task *task,
 			DBusMessage *msg, void *user_data)
 {
 	struct connman_provider *provider = user_data;
@@ -173,9 +214,12 @@ static void vpn_notify(struct connman_task *task,
 	data = connman_provider_get_data(provider);
 
 	name = connman_provider_get_driver_name(provider);
+	if (name == NULL)
+		return NULL;
+
 	vpn_driver_data = g_hash_table_lookup(driver_hash, name);
 	if (vpn_driver_data == NULL)
-		return;
+		return NULL;
 
 	state = vpn_driver_data->vpn_driver->notify(msg, provider);
 	switch (state) {
@@ -194,35 +238,25 @@ static void vpn_notify(struct connman_task *task,
 		connman_provider_set_state(provider,
 					CONNMAN_PROVIDER_STATE_DISCONNECT);
 		break;
+
+	case VPN_STATE_AUTH_FAILURE:
+		connman_provider_indicate_error(provider,
+					CONNMAN_PROVIDER_ERROR_AUTH_FAILED);
+		break;
 	}
+
+	return NULL;
 }
 
-static int vpn_connect(struct connman_provider *provider)
+static int vpn_create_tun(struct connman_provider *provider)
 {
 	struct vpn_data *data = connman_provider_get_data(provider);
-	struct vpn_driver_data *vpn_driver_data;
 	struct ifreq ifr;
-	const char *name;
 	int i, fd, index;
 	int ret = 0;
 
-	if (data != NULL)
-		return -EISCONN;
-
-	data = g_try_new0(struct vpn_data, 1);
 	if (data == NULL)
-		return -ENOMEM;
-
-	data->provider = connman_provider_ref(provider);
-	data->watch = 0;
-	data->flags = 0;
-	data->task = NULL;
-	data->state = VPN_STATE_IDLE;
-
-	connman_provider_set_data(provider, data);
-
-	name = connman_provider_get_driver_name(provider);
-	vpn_driver_data = g_hash_table_lookup(driver_hash, name);
+		return -EISCONN;
 
 	fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
 	if (fd < 0) {
@@ -272,24 +306,66 @@ static int vpn_connect(struct connman_provider *provider)
 	index = connman_inet_ifindex(data->if_name);
 	if (index < 0) {
 		connman_error("Failed to get tun ifindex");
-		kill_tun(data->if_name);
+		stop_vpn(provider);
 		ret = -EIO;
 		goto exist_err;
 	}
 	connman_provider_set_index(provider, index);
 
+	return 0;
+
+exist_err:
+	return ret;
+}
+
+static int vpn_connect(struct connman_provider *provider)
+{
+	struct vpn_data *data = connman_provider_get_data(provider);
+	struct vpn_driver_data *vpn_driver_data;
+	const char *name;
+	int ret = 0;
+
+	if (data != NULL)
+		return -EISCONN;
+
+	data = g_try_new0(struct vpn_data, 1);
+	if (data == NULL)
+		return -ENOMEM;
+
+	data->provider = connman_provider_ref(provider);
+	data->watch = 0;
+	data->flags = 0;
+	data->task = NULL;
+	data->state = VPN_STATE_IDLE;
+
+	connman_provider_set_data(provider, data);
+
+	name = connman_provider_get_driver_name(provider);
+	if (name == NULL)
+		return -EINVAL;
+
+	vpn_driver_data = g_hash_table_lookup(driver_hash, name);
+
+	if (vpn_driver_data != NULL && vpn_driver_data->vpn_driver != NULL &&
+		vpn_driver_data->vpn_driver->flags != VPN_FLAG_NO_TUN) {
+
+		ret = vpn_create_tun(provider);
+		if (ret < 0)
+			goto exist_err;
+	}
+
 	data->task = connman_task_create(vpn_driver_data->program);
 
 	if (data->task == NULL) {
 		ret = -ENOMEM;
-		kill_tun(data->if_name);
+		stop_vpn(provider);
 		goto exist_err;
 	}
 
 	if (connman_task_set_notify(data->task, "notify",
 					vpn_notify, provider)) {
 		ret = -ENOMEM;
-		kill_tun(data->if_name);
+		stop_vpn(provider);
 		connman_task_destroy(data->task);
 		data->task = NULL;
 		goto exist_err;
@@ -298,7 +374,7 @@ static int vpn_connect(struct connman_provider *provider)
 	ret = vpn_driver_data->vpn_driver->connect(provider, data->task,
 							data->if_name);
 	if (ret < 0) {
-		kill_tun(data->if_name);
+		stop_vpn(provider);
 		connman_task_destroy(data->task);
 		data->task = NULL;
 		goto exist_err;
@@ -315,6 +391,7 @@ exist_err:
 	connman_provider_set_index(provider, -1);
 	connman_provider_set_data(provider, NULL);
 	connman_provider_unref(data->provider);
+	g_free(data->if_name);
 	g_free(data);
 
 	return ret;
@@ -337,6 +414,9 @@ static int vpn_disconnect(struct connman_provider *provider)
 		return 0;
 
 	name = connman_provider_get_driver_name(provider);
+	if (name == NULL)
+		return 0;
+
 	vpn_driver_data = g_hash_table_lookup(driver_hash, name);
 	if (vpn_driver_data->vpn_driver->disconnect)
 		vpn_driver_data->vpn_driver->disconnect();
@@ -356,7 +436,6 @@ static int vpn_remove(struct connman_provider *provider)
 	struct vpn_data *data;
 
 	data = connman_provider_get_data(provider);
-	connman_provider_set_data(provider, NULL);
 	if (data == NULL)
 		return 0;
 
@@ -366,7 +445,21 @@ static int vpn_remove(struct connman_provider *provider)
 	connman_task_stop(data->task);
 
 	g_usleep(G_USEC_PER_SEC);
-	kill_tun(data->if_name);
+	stop_vpn(provider);
+	return 0;
+}
+
+static int vpn_save (struct connman_provider *provider, GKeyFile *keyfile)
+{
+	struct vpn_driver_data *vpn_driver_data;
+	const char *name;
+
+	name = connman_provider_get_driver_name(provider);
+	vpn_driver_data = g_hash_table_lookup(driver_hash, name);
+	if (vpn_driver_data != NULL &&
+			vpn_driver_data->vpn_driver->save != NULL)
+		return vpn_driver_data->vpn_driver->save(provider, keyfile);
+
 	return 0;
 }
 
@@ -389,6 +482,7 @@ int vpn_register(const char *name, struct vpn_driver *vpn_driver,
 	data->provider_driver.connect = vpn_connect;
 	data->provider_driver.probe = vpn_probe;
 	data->provider_driver.remove = vpn_remove;
+	data->provider_driver.save = vpn_save;
 
 	if (driver_hash == NULL) {
 		driver_hash = g_hash_table_new_full(g_str_hash,

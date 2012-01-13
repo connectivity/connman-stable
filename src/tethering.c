@@ -65,7 +65,7 @@
 #define PRIVATE_NETWORK_SECONDARY_DNS "8.8.4.4"
 
 static char *default_interface = NULL;
-static volatile gint tethering_enabled;
+static volatile int tethering_enabled;
 static GDHCPServer *tethering_dhcp_server = NULL;
 static DBusConnection *connection;
 static GHashTable *pn_hash;
@@ -337,44 +337,44 @@ static void disable_nat(const char *interface)
 void __connman_tethering_set_enabled(void)
 {
 	int err;
+	const char *dns;
 
 	DBG("enabled %d", tethering_enabled + 1);
 
-	if (g_atomic_int_exchange_and_add(&tethering_enabled, 1) == 0) {
-		const char *dns;
+	if (__sync_fetch_and_add(&tethering_enabled, 1) != 0)
+		return;
 
-		err = create_bridge(BRIDGE_NAME);
-		if (err < 0)
-			return;
+	err = create_bridge(BRIDGE_NAME);
+	if (err < 0)
+		return;
 
-		err = enable_bridge(BRIDGE_NAME);
-		if (err < 0 && err != -EALREADY) {
-			remove_bridge(BRIDGE_NAME);
-			return;
-		}
-
-		dns = BRIDGE_IP;
-		if (__connman_dnsproxy_add_listener(BRIDGE_NAME) < 0) {
-			connman_error("Can't add listener %s to DNS proxy",
-								BRIDGE_NAME);
-			dns = BRIDGE_DNS;
-		}
-
-		tethering_dhcp_server =
-			dhcp_server_start(BRIDGE_NAME,
-						BRIDGE_IP, BRIDGE_SUBNET,
-						BRIDGE_IP_START, BRIDGE_IP_END,
-							24 * 3600, dns);
-		if (tethering_dhcp_server == NULL) {
-			disable_bridge(BRIDGE_NAME);
-			remove_bridge(BRIDGE_NAME);
-			return;
-		}
-
-		enable_nat(default_interface);
-
-		DBG("tethering started");
+	err = enable_bridge(BRIDGE_NAME);
+	if (err < 0 && err != -EALREADY) {
+		remove_bridge(BRIDGE_NAME);
+		return;
 	}
+
+	dns = BRIDGE_IP;
+	if (__connman_dnsproxy_add_listener(BRIDGE_NAME) < 0) {
+		connman_error("Can't add listener %s to DNS proxy",
+								BRIDGE_NAME);
+		dns = BRIDGE_DNS;
+	}
+
+	tethering_dhcp_server =
+		dhcp_server_start(BRIDGE_NAME,
+					BRIDGE_IP, BRIDGE_SUBNET,
+					BRIDGE_IP_START, BRIDGE_IP_END,
+					24 * 3600, dns);
+	if (tethering_dhcp_server == NULL) {
+		disable_bridge(BRIDGE_NAME);
+		remove_bridge(BRIDGE_NAME);
+		return;
+	}
+
+	enable_nat(default_interface);
+
+	DBG("tethering started");
 }
 
 void __connman_tethering_set_disabled(void)
@@ -383,17 +383,20 @@ void __connman_tethering_set_disabled(void)
 
 	__connman_dnsproxy_remove_listener(BRIDGE_NAME);
 
-	if (g_atomic_int_dec_and_test(&tethering_enabled) == TRUE) {
-		disable_nat(default_interface);
+	if (__sync_fetch_and_sub(&tethering_enabled, 1) != 1)
+		return;
 
-		dhcp_server_stop(tethering_dhcp_server);
+	disable_nat(default_interface);
 
-		disable_bridge(BRIDGE_NAME);
+	dhcp_server_stop(tethering_dhcp_server);
 
-		remove_bridge(BRIDGE_NAME);
+	tethering_dhcp_server = NULL;
 
-		DBG("tethering stopped");
-	}
+	disable_bridge(BRIDGE_NAME);
+
+	remove_bridge(BRIDGE_NAME);
+
+	DBG("tethering stopped");
 }
 
 void __connman_tethering_update_interface(const char *interface)
@@ -411,7 +414,8 @@ void __connman_tethering_update_interface(const char *interface)
 
 	default_interface = g_strdup(interface);
 
-	if (!g_atomic_int_get(&tethering_enabled))
+	__sync_synchronize();
+	if (tethering_enabled == 0)
 		return;
 
 	enable_nat(interface);
@@ -614,7 +618,8 @@ void __connman_tethering_cleanup(void)
 {
 	DBG("");
 
-	if (g_atomic_int_get(&tethering_enabled)) {
+	__sync_synchronize();
+	if (tethering_enabled == 0) {
 		if (tethering_dhcp_server)
 			dhcp_server_stop(tethering_dhcp_server);
 		disable_bridge(BRIDGE_NAME);

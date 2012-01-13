@@ -50,11 +50,6 @@ static DBusMessage *get_properties(DBusConnection *conn,
 
 	connman_dbus_dict_open(&array, &dict);
 
-	str = __connman_profile_active_path();
-	if (str != NULL)
-		connman_dbus_dict_append_basic(&dict, "ActiveProfile",
-						DBUS_TYPE_OBJECT_PATH, &str);
-
 	connman_dbus_dict_append_array(&dict, "Services",
 			DBUS_TYPE_OBJECT_PATH, __connman_service_list, NULL);
 	connman_dbus_dict_append_array(&dict, "Technologies",
@@ -64,7 +59,7 @@ static DBusMessage *get_properties(DBusConnection *conn,
 	connman_dbus_dict_append_basic(&dict, "State",
 						DBUS_TYPE_STRING, &str);
 
-	offlinemode = __connman_profile_get_offlinemode();
+	offlinemode = __connman_technology_get_offlinemode();
 	connman_dbus_dict_append_basic(&dict, "OfflineMode",
 					DBUS_TYPE_BOOLEAN, &offlinemode);
 
@@ -121,15 +116,7 @@ static DBusMessage *set_property(DBusConnection *conn,
 
 		dbus_message_iter_get_basic(&value, &offlinemode);
 
-		__connman_profile_set_offlinemode(offlinemode, TRUE);
-
-		__connman_profile_save_default();
-	} else if (g_str_equal(name, "ActiveProfile") == TRUE) {
-		const char *str;
-
-		dbus_message_iter_get_basic(&value, &str);
-
-		return __connman_error_not_supported(msg);
+		__connman_technology_set_offlinemode(offlinemode);
 	} else if (g_str_equal(name, "SessionMode") == TRUE) {
 		connman_bool_t sessionmode;
 
@@ -143,7 +130,7 @@ static DBusMessage *set_property(DBusConnection *conn,
 
 		__connman_session_set_mode(sessionmode);
 
-		if (connman_state_idle == FALSE) {
+		if (sessionmode == TRUE && connman_state_idle == FALSE) {
 			session_mode_pending = msg;
 			return NULL;
 		}
@@ -221,59 +208,6 @@ static DBusMessage *request_scan(DBusConnection *conn,
 
 static DBusConnection *connection = NULL;
 
-static enum connman_service_type technology_type;
-static connman_bool_t technology_enabled;
-static DBusMessage *technology_pending = NULL;
-static guint technology_timeout = 0;
-
-static void technology_reply(int error)
-{
-	DBG("");
-
-	if (technology_timeout > 0) {
-		g_source_remove(technology_timeout);
-		technology_timeout = 0;
-	}
-
-	if (technology_pending != NULL) {
-		if (error > 0) {
-			DBusMessage *reply;
-
-			reply = __connman_error_failed(technology_pending,
-								error);
-			if (reply != NULL)
-				g_dbus_send_message(connection, reply);
-		} else
-			g_dbus_send_reply(connection, technology_pending,
-							DBUS_TYPE_INVALID);
-
-		dbus_message_unref(technology_pending);
-		technology_pending = NULL;
-	}
-
-	technology_type = CONNMAN_SERVICE_TYPE_UNKNOWN;
-}
-
-static gboolean technology_abort(gpointer user_data)
-{
-	DBG("");
-
-	technology_timeout = 0;
-
-	technology_reply(ETIMEDOUT);
-
-	return FALSE;
-}
-
-static void technology_notify(enum connman_service_type type,
-						connman_bool_t enabled)
-{
-	DBG("type %d enabled %d", type, enabled);
-
-	if (type == technology_type && enabled == technology_enabled)
-		technology_reply(0);
-}
-
 static void session_mode_notify(void)
 {
 	DBusMessage *reply;
@@ -301,7 +235,6 @@ static void idle_state(connman_bool_t idle)
 static struct connman_notifier technology_notifier = {
 	.name		= "manager",
 	.priority	= CONNMAN_NOTIFIER_PRIORITY_HIGH,
-	.service_enabled= technology_notify,
 	.idle_state	= idle_state,
 };
 
@@ -310,12 +243,8 @@ static DBusMessage *enable_technology(DBusConnection *conn,
 {
 	enum connman_service_type type;
 	const char *str;
-	int err;
 
 	DBG("conn %p", conn);
-
-	if (technology_pending != NULL)
-		return __connman_error_in_progress(msg);
 
 	dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING, &str,
 							DBUS_TYPE_INVALID);
@@ -339,16 +268,7 @@ static DBusMessage *enable_technology(DBusConnection *conn,
 	if (__connman_notifier_is_enabled(type) == TRUE)
 		return __connman_error_already_enabled(msg);
 
-	technology_type = type;
-	technology_enabled = TRUE;
-	technology_pending = dbus_message_ref(msg);
-
-	err = __connman_device_enable_technology(type);
-	if (err < 0 && err != -EINPROGRESS)
-		technology_reply(-err);
-	else
-		technology_timeout = g_timeout_add_seconds(15,
-						technology_abort, NULL);
+	 __connman_technology_enable(type, msg);
 
 	return NULL;
 }
@@ -358,12 +278,8 @@ static DBusMessage *disable_technology(DBusConnection *conn,
 {
 	enum connman_service_type type;
 	const char *str;
-	int err;
 
 	DBG("conn %p", conn);
-
-	if (technology_pending != NULL)
-		return __connman_error_in_progress(msg);
 
 	dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING, &str,
 							DBUS_TYPE_INVALID);
@@ -387,16 +303,7 @@ static DBusMessage *disable_technology(DBusConnection *conn,
 	if (__connman_notifier_is_enabled(type) == FALSE)
 		return __connman_error_already_disabled(msg);
 
-	technology_type = type;
-	technology_enabled = FALSE;
-	technology_pending = dbus_message_ref(msg);
-
-	err = __connman_device_disable_technology(type);
-	if (err < 0 && err != -EINPROGRESS)
-		technology_reply(-err);
-	else
-		technology_timeout = g_timeout_add_seconds(10,
-						technology_abort, NULL);
+	__connman_technology_disable(type, msg);
 
 	return NULL;
 }
@@ -729,10 +636,10 @@ void __connman_manager_cleanup(void)
 {
 	DBG("");
 
-	connman_notifier_unregister(&technology_notifier);
-
 	if (connection == NULL)
 		return;
+
+	connman_notifier_unregister(&technology_notifier);
 
 	g_dbus_unregister_interface(connection, CONNMAN_MANAGER_PATH,
 						CONNMAN_MANAGER_INTERFACE);

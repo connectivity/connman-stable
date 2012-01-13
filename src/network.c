@@ -32,7 +32,7 @@ static GSList *network_list = NULL;
 static GSList *driver_list = NULL;
 
 struct connman_network {
-	gint refcount;
+	int refcount;
 	enum connman_network_type type;
 	connman_bool_t available;
 	connman_bool_t connected;
@@ -389,9 +389,9 @@ struct connman_network *connman_network_create(const char *identifier,
 struct connman_network *connman_network_ref(struct connman_network *network)
 {
 	DBG("network %p name %s refcount %d", network, network->name,
-		g_atomic_int_get(&network->refcount) + 1);
+		network->refcount + 1);
 
-	g_atomic_int_inc(&network->refcount);
+	__sync_fetch_and_add(&network->refcount, 1);
 
 	return network;
 }
@@ -405,9 +405,9 @@ struct connman_network *connman_network_ref(struct connman_network *network)
 void connman_network_unref(struct connman_network *network)
 {
 	DBG("network %p name %s refcount %d", network, network->name,
-		g_atomic_int_get(&network->refcount) - 1);
+		network->refcount - 1);
 
-	if (g_atomic_int_dec_and_test(&network->refcount) == FALSE)
+	if (__sync_fetch_and_sub(&network->refcount, 1) != 1)
 		return;
 
 	network_list = g_slist_remove(network_list, network);
@@ -1048,11 +1048,9 @@ static gboolean set_connected(gpointer user_data)
 		}
 
 	} else {
-		struct connman_service *service;
+		enum connman_service_state state;
 
 		__connman_device_set_network(network->device, NULL);
-
-		service = __connman_service_lookup_from_network(network);
 
 		switch (ipv4_method) {
 		case CONNMAN_IPCONFIG_METHOD_UNKNOWN:
@@ -1066,11 +1064,24 @@ static gboolean set_connected(gpointer user_data)
 			break;
 		}
 
-		__connman_service_ipconfig_indicate_state(service,
+		/*
+		 * We only set the disconnect state if we were not in idle
+		 * or in failure. It does not make sense to go to disconnect
+		 * state if we were not connected.
+		 */
+		state = __connman_service_ipconfig_get_state(service,
+						CONNMAN_IPCONFIG_TYPE_IPV4);
+		if (state != CONNMAN_SERVICE_STATE_IDLE &&
+					state != CONNMAN_SERVICE_STATE_FAILURE)
+			__connman_service_ipconfig_indicate_state(service,
 					CONNMAN_SERVICE_STATE_DISCONNECT,
 					CONNMAN_IPCONFIG_TYPE_IPV4);
 
-		__connman_service_ipconfig_indicate_state(service,
+		state = __connman_service_ipconfig_get_state(service,
+						CONNMAN_IPCONFIG_TYPE_IPV6);
+		if (state != CONNMAN_SERVICE_STATE_IDLE &&
+					state != CONNMAN_SERVICE_STATE_FAILURE)
+			__connman_service_ipconfig_indicate_state(service,
 					CONNMAN_SERVICE_STATE_DISCONNECT,
 					CONNMAN_IPCONFIG_TYPE_IPV6);
 
@@ -1306,6 +1317,9 @@ int __connman_network_set_ipconfig(struct connman_network *network,
 	enum connman_ipconfig_method method;
 	int ret;
 
+	if (network == NULL)
+		return -EINVAL;
+
 	if (ipconfig_ipv6) {
 		method = __connman_ipconfig_get_method(ipconfig_ipv6);
 
@@ -1396,7 +1410,7 @@ int connman_network_set_nameservers(struct connman_network *network,
 
 	for (i = 0; nameservers_array[i] != NULL; i++) {
 		__connman_service_nameserver_append(service,
-						nameservers_array[i]);
+						nameservers_array[i], FALSE);
 	}
 
 	g_strfreev(nameservers_array);

@@ -33,7 +33,7 @@
 static DBusConnection *connection;
 static GHashTable *session_hash;
 static connman_bool_t sessionmode;
-static struct connman_session *ecall_session;
+static struct session_info *ecall_info;
 
 enum connman_session_trigger {
 	CONNMAN_SESSION_TRIGGER_UNKNOWN		= 0,
@@ -48,8 +48,9 @@ enum connman_session_trigger {
 enum connman_session_reason {
 	CONNMAN_SESSION_REASON_UNKNOWN		= 0,
 	CONNMAN_SESSION_REASON_CONNECT		= 1,
-	CONNMAN_SESSION_REASON_FREE_RIDE	= 2,
-	CONNMAN_SESSION_REASON_PERIODIC		= 3,
+	CONNMAN_SESSION_REASON_DISCONNECT	= 2,
+	CONNMAN_SESSION_REASON_FREE_RIDE	= 3,
+	CONNMAN_SESSION_REASON_PERIODIC		= 4,
 };
 
 enum connman_session_roaming_policy {
@@ -69,6 +70,7 @@ struct service_entry {
 	struct connman_service *service;
 	char *ifname;
 	const char *bearer;
+	GSList *pending_timeouts;
 };
 
 struct session_info {
@@ -137,6 +139,8 @@ static const char *reason2string(enum connman_session_reason reason)
 		return "unknown";
 	case CONNMAN_SESSION_REASON_CONNECT:
 		return "connect";
+	case CONNMAN_SESSION_REASON_DISCONNECT:
+		return "disconnect";
 	case CONNMAN_SESSION_REASON_FREE_RIDE:
 		return "free-ride";
 	case CONNMAN_SESSION_REASON_PERIODIC:
@@ -195,7 +199,7 @@ static enum connman_service_type bearer2service(const char *bearer)
 		return CONNMAN_SERVICE_TYPE_WIMAX;
 	else if (g_strcmp0(bearer, "bluetooth") == 0)
 		return CONNMAN_SERVICE_TYPE_BLUETOOTH;
-	else if (g_strcmp0(bearer, "3g") == 0)
+	else if (g_strcmp0(bearer, "cellular") == 0)
 		return CONNMAN_SERVICE_TYPE_CELLULAR;
 	else if (g_strcmp0(bearer, "vpn") == 0)
 		return CONNMAN_SERVICE_TYPE_VPN;
@@ -215,7 +219,7 @@ static char *service2bearer(enum connman_service_type type)
 	case CONNMAN_SERVICE_TYPE_BLUETOOTH:
 		return "bluetooth";
 	case CONNMAN_SERVICE_TYPE_CELLULAR:
-		return "3g";
+		return "cellular";
 	case CONNMAN_SERVICE_TYPE_VPN:
 		return "vpn";
 	case CONNMAN_SERVICE_TYPE_UNKNOWN:
@@ -501,8 +505,6 @@ static gboolean session_notify(gpointer user_data)
 
 	g_dbus_send_message(connection, msg);
 
-	session->info_dirty = FALSE;
-
 	return FALSE;
 }
 
@@ -565,7 +567,7 @@ static int service_type_weight(enum connman_service_type type)
 	 * 1. Ethernet
 	 * 2. Bluetooth
 	 * 3. WiFi/WiMAX
-	 * 4. GSM/UTMS/3G
+	 * 4. Cellular
 	 */
 
 	switch (type) {
@@ -718,6 +720,7 @@ static connman_bool_t explicit_connect(enum connman_session_reason reason)
 	switch (reason) {
 	case CONNMAN_SESSION_REASON_UNKNOWN:
 	case CONNMAN_SESSION_REASON_FREE_RIDE:
+	case CONNMAN_SESSION_REASON_DISCONNECT:
 		break;
 	case CONNMAN_SESSION_REASON_CONNECT:
 	case CONNMAN_SESSION_REASON_PERIODIC:
@@ -727,15 +730,13 @@ static connman_bool_t explicit_connect(enum connman_session_reason reason)
 	return FALSE;
 }
 
-static connman_bool_t explicit_disconnect(struct connman_session *session)
+static connman_bool_t explicit_disconnect(struct session_info *info)
 {
-	struct session_info *info = session->info;
-
 	if (info->entry == NULL)
 		return FALSE;
 
-	DBG("session %p, reason %s service %p state %d",
-		session, reason2string(info->entry->reason),
+	DBG("reason %s service %p state %d",
+		reason2string(info->entry->reason),
 		info->entry->service, info->entry->state);
 
 	if (info->entry->reason == CONNMAN_SESSION_REASON_UNKNOWN)
@@ -747,15 +748,82 @@ static connman_bool_t explicit_disconnect(struct connman_session *session)
 	if (__connman_service_session_dec(info->entry->service) == FALSE)
 		return FALSE;
 
-	if (ecall_session != NULL && ecall_session != session)
+	if (ecall_info != NULL && ecall_info != info)
 		return FALSE;
+
+	return TRUE;
+}
+
+struct pending_data {
+	unsigned int timeout;
+	struct service_entry *entry;
+	gboolean (*cb)(gpointer);
+};
+
+static void pending_timeout_free(gpointer data, gpointer user_data)
+{
+	struct pending_data *pending = data;
+
+	DBG("pending %p timeout %d", pending, pending->timeout);
+	g_source_remove(pending->timeout);
+	g_free(pending);
+}
+
+static void pending_timeout_remove_all(struct service_entry *entry)
+{
+	DBG("");
+
+	g_slist_foreach(entry->pending_timeouts, pending_timeout_free, NULL);
+	g_slist_free(entry->pending_timeouts);
+	entry->pending_timeouts = NULL;
+}
+
+static gboolean pending_timeout_cb(gpointer data)
+{
+	struct pending_data *pending = data;
+	struct service_entry *entry = pending->entry;
+	gboolean ret;
+
+	DBG("pending %p timeout %d", pending, pending->timeout);
+
+	ret = pending->cb(pending->entry);
+	if (ret == FALSE) {
+		entry->pending_timeouts =
+			g_slist_remove(entry->pending_timeouts,
+					pending);
+		g_free(pending);
+	}
+	return ret;
+}
+
+static connman_bool_t pending_timeout_add(unsigned int seconds,
+					gboolean (*cb)(gpointer),
+					struct service_entry *entry)
+{
+	struct pending_data *pending = g_try_new0(struct pending_data, 1);
+
+	if (pending == NULL || cb == NULL || entry == NULL) {
+		g_free(pending);
+		return FALSE;
+	}
+
+	pending->cb = cb;
+	pending->entry = entry;
+	pending->timeout = g_timeout_add_seconds(seconds, pending_timeout_cb,
+						pending);
+	entry->pending_timeouts = g_slist_prepend(entry->pending_timeouts,
+						pending);
+
+	DBG("pending %p entry %p timeout id %d", pending, entry,
+		pending->timeout);
 
 	return TRUE;
 }
 
 static gboolean call_disconnect(gpointer user_data)
 {
-	struct connman_service *service = user_data;
+	struct service_entry *entry = user_data;
+	struct connman_service *service = entry->service;
 
 	/*
 	 * TODO: We should mark this entry as pending work. In case
@@ -770,7 +838,8 @@ static gboolean call_disconnect(gpointer user_data)
 
 static gboolean call_connect(gpointer user_data)
 {
-	struct connman_service *service = user_data;
+	struct service_entry *entry = user_data;
+	struct connman_service *service = entry->service;
 
 	DBG("connect service %p", service);
 	__connman_service_connect(service);
@@ -778,29 +847,87 @@ static gboolean call_connect(gpointer user_data)
 	return FALSE;
 }
 
-static void test_and_disconnect(struct connman_session *session)
+static connman_bool_t deselect_service(struct session_info *info)
 {
-	struct session_info *info = session->info;
-	struct connman_service *service;
+	struct service_entry *entry;
 	connman_bool_t disconnect, online;
 
-	if (info->entry == NULL)
-		return;
+	DBG("");
 
-	disconnect = explicit_disconnect(session);
+	if (info->entry == NULL)
+		return FALSE;
+
+	disconnect = explicit_disconnect(info);
 
 	online = is_connecting(info->entry->state) == TRUE ||
 			is_online(info->entry->state) == TRUE;
 
 	info->online = FALSE;
-	info->reason = CONNMAN_SESSION_REASON_UNKNOWN;
 	info->entry->reason = CONNMAN_SESSION_REASON_UNKNOWN;
 
-	service = info->entry->service;
+	entry = info->entry;
 	info->entry = NULL;
 
+	DBG("disconnect %d online %d", disconnect, online);
+
 	if (disconnect == TRUE && online == TRUE)
-		g_timeout_add_seconds(0, call_disconnect, service);
+		pending_timeout_add(0, call_disconnect, entry);
+
+	return TRUE;
+}
+
+static void deselect_and_disconnect(struct connman_session *session,
+					enum connman_session_reason reason)
+{
+	struct session_info *info = session->info;
+
+	session->info_dirty |= deselect_service(info);
+
+	info->reason = reason;
+}
+
+static connman_bool_t select_online_service(struct session_info *info,
+					struct service_entry *entry)
+{
+	info->online = TRUE;
+
+	info->entry = entry;
+	info->entry->reason = info->reason;
+
+	if (explicit_connect(info->reason) == FALSE)
+		return TRUE;
+
+	__connman_service_session_inc(info->entry->service);
+
+	return TRUE;
+}
+
+static connman_bool_t select_offline_service(struct session_info *info,
+					struct service_entry *entry)
+{
+	if (explicit_connect(info->reason) == FALSE)
+		return FALSE;
+
+	info->online = FALSE;
+
+	info->entry = entry;
+	info->entry->reason = info->reason;
+
+	__connman_service_session_inc(info->entry->service);
+	pending_timeout_add(0, call_connect, entry);
+
+	return TRUE;
+}
+
+static connman_bool_t select_service(struct session_info *info,
+				struct service_entry *entry)
+{
+	DBG("service %p", entry->service);
+
+	if (is_online(entry->state) == TRUE)
+		return select_online_service(info, entry);
+	else
+		return select_offline_service(info, entry);
 }
 
 static void select_and_connect(struct connman_session *session,
@@ -809,7 +936,6 @@ static void select_and_connect(struct connman_session *session,
 	struct session_info *info = session->info;
 	struct service_entry *entry = NULL;
 	GSequenceIter *iter;
-	connman_bool_t do_connect = FALSE;
 
 	DBG("session %p reason %s", session, reason2string(reason));
 
@@ -825,197 +951,18 @@ static void select_and_connect(struct connman_session *session,
 		case CONNMAN_SERVICE_STATE_CONFIGURATION:
 		case CONNMAN_SERVICE_STATE_READY:
 		case CONNMAN_SERVICE_STATE_ONLINE:
-			/* connecting or connected */
-			break;
 		case CONNMAN_SERVICE_STATE_IDLE:
 		case CONNMAN_SERVICE_STATE_DISCONNECT:
-			if (explicit_connect(reason) == TRUE)
-				do_connect = TRUE;
-			break;
+			session->info_dirty |=
+				select_service(info, entry);
+			return;
 		case CONNMAN_SERVICE_STATE_UNKNOWN:
 		case CONNMAN_SERVICE_STATE_FAILURE:
-			entry = NULL;
 			break;
 		}
-
-		if (entry != NULL)
-			break;
 
 		iter = g_sequence_iter_next(iter);
 	}
-
-	if (info->entry != NULL && info->entry != entry)
-		test_and_disconnect(session);
-
-	if (entry == NULL) {
-		info->entry = NULL;
-		return;
-	}
-
-	info->entry = entry;
-	info->entry->reason = reason;
-
-	if (do_connect == TRUE) {
-		__connman_service_session_inc(info->entry->service);
-		g_timeout_add_seconds(0, call_connect, info->entry->service);
-	} else if (reason == CONNMAN_SESSION_REASON_CONNECT) {
-		/* session is already online take ref */
-		__connman_service_session_inc(info->entry->service);
-	}
-
-	info->online = is_online(entry->state);
-}
-
-static void session_changed(struct connman_session *session,
-				enum connman_session_trigger trigger)
-{
-	struct session_info *info = session->info;
-	struct session_info *info_last = session->info_last;
-	GSequenceIter *iter;
-
-	/*
-	 * TODO: This only a placeholder for the 'real' algorithm to
-	 * play a bit around. So we are going to improve it step by step.
-	 */
-
-	DBG("session %p trigger %s", session, trigger2string(trigger));
-
-	switch (trigger) {
-	case CONNMAN_SESSION_TRIGGER_UNKNOWN:
-		DBG("ignore session changed event");
-		return;
-	case CONNMAN_SESSION_TRIGGER_SETTING:
-		if (info->entry != NULL) {
-			iter = g_hash_table_lookup(session->service_hash,
-							info->entry->service);
-			if (iter == NULL) {
-				/*
-				 * This service is not part of this
-				 * session anymore.
-				 */
-				test_and_disconnect(session);
-			}
-		}
-
-		if (info->online == FALSE) {
-			select_and_connect(session,
-					CONNMAN_SESSION_REASON_FREE_RIDE);
-		}
-
-		break;
-	case CONNMAN_SESSION_TRIGGER_CONNECT:
-		if (info->online == TRUE) {
-			if (info->entry->reason == CONNMAN_SESSION_REASON_CONNECT)
-				break;
-			info->entry->reason = CONNMAN_SESSION_REASON_CONNECT;
-			__connman_service_session_inc(info->entry->service);
-			break;
-		}
-
-		select_and_connect(session,
-				CONNMAN_SESSION_REASON_CONNECT);
-
-		break;
-	case CONNMAN_SESSION_TRIGGER_DISCONNECT:
-		test_and_disconnect(session);
-
-		break;
-	case CONNMAN_SESSION_TRIGGER_PERIODIC:
-		if (info->online == TRUE) {
-			info->entry->reason = CONNMAN_SESSION_REASON_PERIODIC;
-			__connman_service_session_inc(info->entry->service);
-			break;
-		}
-
-		select_and_connect(session,
-				CONNMAN_SESSION_REASON_PERIODIC);
-
-		break;
-	case CONNMAN_SESSION_TRIGGER_SERVICE:
-		switch (info->reason) {
-		case CONNMAN_SESSION_REASON_CONNECT:
-			if (info->entry != NULL &&
-					(is_connecting(info->entry->state) == TRUE ||
-					is_online(info->entry->state) == TRUE)) {
-				break;
-			}
-
-			/*
-			 * We are not online, we are not connecting, that
-			 * means we could still have a valid info->entry.
-			 * Though something has changed from the service layer.
-			 * Therefore we want to restart the algorithm. Before we
-			 * can do that we have to cleanup a potientional old entry.
-			 */
-			test_and_disconnect(session);
-			info->reason = CONNMAN_SESSION_REASON_CONNECT; /* restore value */
-
-			DBG("Retry to find a matching session");
-			/*
-			 * The user called Connect() but there was no
-			 * matching session available at this point.
-			 * Now there might be a new one. Let's retry
-			 * to select and connect
-			 */
-			select_and_connect(session,
-					CONNMAN_SESSION_REASON_CONNECT);
-			break;
-		case CONNMAN_SESSION_REASON_PERIODIC:
-		case CONNMAN_SESSION_REASON_FREE_RIDE:
-			if (info->stay_connected == TRUE) {
-				DBG("StayConnected");
-				select_and_connect(session,
-					CONNMAN_SESSION_REASON_CONNECT);
-			} else {
-				select_and_connect(session,
-					CONNMAN_SESSION_REASON_FREE_RIDE);
-			}
-			break;
-		case CONNMAN_SESSION_REASON_UNKNOWN:
-			break;
-		}
-		break;
-	case CONNMAN_SESSION_TRIGGER_ECALL:
-		if (info->online == FALSE && info->entry->service != NULL)
-			test_and_disconnect(session);
-
-		break;
-	}
-
-	if (info->entry != info_last->entry)
-		session->info_dirty = TRUE;
-
-	session_notify(session);
-}
-
-static DBusMessage *connect_session(DBusConnection *conn,
-					DBusMessage *msg, void *user_data)
-{
-	struct connman_session *session = user_data;
-
-	DBG("session %p", session);
-
-	if (ecall_session != NULL && ecall_session != session)
-		return __connman_error_failed(msg, EBUSY);
-
-	session_changed(session, CONNMAN_SESSION_TRIGGER_CONNECT);
-
-	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
-}
-
-static DBusMessage *disconnect_session(DBusConnection *conn,
-					DBusMessage *msg, void *user_data)
-{
-	struct connman_session *session = user_data;
-
-	DBG("session %p", session);
-
-	if (ecall_session != NULL && ecall_session != session)
-		return __connman_error_failed(msg, EBUSY);
-
-	session_changed(session, CONNMAN_SESSION_TRIGGER_DISCONNECT);
-
-	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
 }
 
 static struct service_entry *create_service_entry(struct connman_service *service,
@@ -1053,21 +1000,20 @@ static void destroy_service_entry(gpointer data)
 {
 	struct service_entry *entry = data;
 
+	pending_timeout_remove_all(entry);
 	g_free(entry->ifname);
 
 	g_free(entry);
 }
 
-static void update_allowed_bearers(struct connman_session *session)
+static void populate_service_list(struct connman_session *session)
 {
 	struct service_entry *entry;
 	GSequenceIter *iter;
 
-	if (session->service_list != NULL) {
-		g_hash_table_remove_all(session->service_hash);
-		g_sequence_free(session->service_list);
-	}
-
+	session->service_hash =
+		g_hash_table_new_full(g_direct_hash, g_direct_equal,
+					NULL, NULL);
 	session->service_list = __connman_service_get_list(session,
 							service_match,
 							create_service_entry,
@@ -1089,8 +1035,161 @@ static void update_allowed_bearers(struct connman_session *session)
 
 		iter = g_sequence_iter_next(iter);
 	}
+}
 
-	session->info_dirty = TRUE;
+static void session_changed(struct connman_session *session,
+				enum connman_session_trigger trigger)
+{
+	struct session_info *info = session->info;
+	struct session_info *info_last = session->info_last;
+	GSequenceIter *service_iter = NULL, *service_iter_last = NULL;
+	GSequence *service_list_last;
+	GHashTable *service_hash_last;
+
+	/*
+	 * TODO: This only a placeholder for the 'real' algorithm to
+	 * play a bit around. So we are going to improve it step by step.
+	 */
+
+	DBG("session %p trigger %s reason %s", session, trigger2string(trigger),
+						reason2string(info->reason));
+
+	if (info->entry != NULL) {
+		info->online = is_online(info->entry->state);
+		if (info_last->online != info->online)
+			session->info_dirty = TRUE;
+	}
+
+	switch (trigger) {
+	case CONNMAN_SESSION_TRIGGER_UNKNOWN:
+		DBG("ignore session changed event");
+		return;
+	case CONNMAN_SESSION_TRIGGER_SETTING:
+		if (info->allowed_bearers != info_last->allowed_bearers) {
+
+			service_hash_last = session->service_hash;
+			service_list_last = session->service_list;
+
+			populate_service_list(session);
+
+			if (info->entry != NULL) {
+				service_iter_last = g_hash_table_lookup(
+							service_hash_last,
+							info->entry->service);
+				service_iter = g_hash_table_lookup(
+							session->service_hash,
+							info->entry->service);
+			}
+
+			if (service_iter == NULL && service_iter_last != NULL) {
+				/*
+				 * The currently selected service is
+				 * not part of this session anymore.
+				 */
+				deselect_and_disconnect(session, info->reason);
+			}
+
+			g_hash_table_remove_all(service_hash_last);
+			g_sequence_free(service_list_last);
+		}
+
+		if (info->online == FALSE) {
+			select_and_connect(session,
+					CONNMAN_SESSION_REASON_FREE_RIDE);
+		}
+
+		break;
+	case CONNMAN_SESSION_TRIGGER_CONNECT:
+		if (info->online == TRUE) {
+			if (info->entry->reason == CONNMAN_SESSION_REASON_CONNECT)
+				break;
+			info->entry->reason = CONNMAN_SESSION_REASON_CONNECT;
+			__connman_service_session_inc(info->entry->service);
+			break;
+		}
+
+		if (info->entry != NULL &&
+				is_connecting(info->entry->state) == TRUE) {
+			break;
+		}
+
+		select_and_connect(session,
+				CONNMAN_SESSION_REASON_CONNECT);
+
+		break;
+	case CONNMAN_SESSION_TRIGGER_DISCONNECT:
+		deselect_and_disconnect(session,
+					CONNMAN_SESSION_REASON_DISCONNECT);
+
+		break;
+	case CONNMAN_SESSION_TRIGGER_PERIODIC:
+		if (info->online == TRUE) {
+			info->entry->reason = CONNMAN_SESSION_REASON_PERIODIC;
+			__connman_service_session_inc(info->entry->service);
+			break;
+		}
+
+		select_and_connect(session,
+				CONNMAN_SESSION_REASON_PERIODIC);
+
+		break;
+	case CONNMAN_SESSION_TRIGGER_SERVICE:
+		if (info->entry != NULL &&
+				(is_connecting(info->entry->state) == TRUE ||
+					is_online(info->entry->state) == TRUE)) {
+			break;
+		}
+
+		deselect_and_disconnect(session, info->reason);
+
+		if (info->reason == CONNMAN_SESSION_REASON_FREE_RIDE ||
+				info->stay_connected == TRUE) {
+			select_and_connect(session, info->reason);
+		}
+
+		break;
+	case CONNMAN_SESSION_TRIGGER_ECALL:
+		if (info->online == FALSE && info->entry != NULL &&
+				info->entry->service != NULL) {
+			deselect_and_disconnect(session, info->reason);
+		}
+
+		break;
+	}
+
+	session_notify(session);
+}
+
+static DBusMessage *connect_session(DBusConnection *conn,
+					DBusMessage *msg, void *user_data)
+{
+	struct connman_session *session = user_data;
+	struct session_info *info = session->info;
+
+	DBG("session %p", session);
+
+	if (ecall_info != NULL && ecall_info != info)
+		return __connman_error_failed(msg, EBUSY);
+
+	session_changed(session, CONNMAN_SESSION_TRIGGER_CONNECT);
+
+	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
+}
+
+static DBusMessage *disconnect_session(DBusConnection *conn,
+					DBusMessage *msg, void *user_data)
+{
+	struct connman_session *session = user_data;
+	struct session_info *info = session->info;
+
+	DBG("session %p", session);
+
+	if (ecall_info != NULL && ecall_info != info)
+		return __connman_error_failed(msg, EBUSY);
+
+	session_changed(session, CONNMAN_SESSION_TRIGGER_DISCONNECT);
+
+	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
 }
 
 static void update_ecall_sessions(struct connman_session *session)
@@ -1120,19 +1219,19 @@ static void update_ecall(struct connman_session *session)
 	struct session_info *info = session->info;
 	struct session_info *info_last = session->info_last;
 
-	DBG("session %p ecall_session %p ecall %d -> %d", session,
-		ecall_session, info_last->ecall, info->ecall);
+	DBG("session %p ecall_info %p ecall %d -> %d", session,
+		ecall_info, info_last->ecall, info->ecall);
 
-	if (ecall_session == NULL) {
+	if (ecall_info == NULL) {
 		if (!(info_last->ecall == FALSE && info->ecall == TRUE))
 			goto err;
 
-		ecall_session = session;
-	} else if (ecall_session == session) {
+		ecall_info = info;
+	} else if (ecall_info == info) {
 		if (!(info_last->ecall == TRUE && info->ecall == FALSE))
 			goto err;
 
-		ecall_session = NULL;
+		ecall_info = NULL;
 	} else {
 		goto err;
 	}
@@ -1183,7 +1282,7 @@ static DBusMessage *change_session(DBusConnection *conn,
 
 			info->allowed_bearers = allowed_bearers;
 
-			update_allowed_bearers(session);
+			session->info_dirty = TRUE;
 		} else {
 			goto err;
 		}
@@ -1294,7 +1393,8 @@ static int session_disconnect(struct connman_session *session)
 	g_dbus_unregister_interface(connection, session->session_path,
 						CONNMAN_SESSION_INTERFACE);
 
-	test_and_disconnect(session);
+	deselect_and_disconnect(session,
+				CONNMAN_SESSION_REASON_DISCONNECT);
 
 	g_hash_table_remove(session_hash, session->session_path);
 
@@ -1314,8 +1414,14 @@ static DBusMessage *destroy_session(DBusConnection *conn,
 					DBusMessage *msg, void *user_data)
 {
 	struct connman_session *session = user_data;
+	struct session_info *info = session->info;
 
 	DBG("session %p", session);
+
+	if (ecall_info != NULL && ecall_info != info)
+		return __connman_error_failed(msg, EBUSY);
+
+	session_disconnect(session);
 
 	return g_dbus_create_reply(msg, DBUS_TYPE_INVALID);
 }
@@ -1350,7 +1456,7 @@ int __connman_session_create(DBusMessage *msg)
 
 	DBG("owner %s", owner);
 
-	if (ecall_session != NULL) {
+	if (ecall_info != NULL) {
 		/*
 		 * If there is an emergency call already going on,
 		 * ignore session creation attempt
@@ -1469,9 +1575,6 @@ int __connman_session_create(DBusMessage *msg)
 		g_dbus_add_disconnect_watch(connection, session->owner,
 					owner_disconnect, session, NULL);
 
-	session->service_hash = g_hash_table_new_full(g_direct_hash, g_direct_equal,
-						NULL, NULL);
-
 	info->online = FALSE;
 	info->priority = priority;
 	info->avoid_handover = avoid_handover;
@@ -1516,9 +1619,9 @@ int __connman_session_create(DBusMessage *msg)
 				DBUS_TYPE_INVALID);
 
 
-	update_allowed_bearers(session);
+	populate_service_list(session);
 	if (info->ecall == TRUE) {
-		ecall_session = session;
+		ecall_info = info;
 		update_ecall_sessions(session);
 	}
 
@@ -1671,19 +1774,14 @@ static void service_state_changed(struct connman_service *service,
 {
 	GHashTableIter iter;
 	gpointer key, value;
-	struct connman_session *session;
-	struct session_info *info, *info_last;
 
 	DBG("service %p state %d", service, state);
 
 	g_hash_table_iter_init(&iter, session_hash);
 
 	while (g_hash_table_iter_next(&iter, &key, &value) == TRUE) {
+		struct connman_session *session = value;
 		GSequenceIter *service_iter;
-
-		session = value;
-		info = session->info;
-		info_last = session->info_last;
 
 		service_iter = g_hash_table_lookup(session->service_hash, service);
 		if (service_iter != NULL) {
@@ -1691,12 +1789,6 @@ static void service_state_changed(struct connman_service *service,
 
 			entry = g_sequence_get(service_iter);
 			entry->state = state;
-
-			if (info->entry == entry) {
-				info->online = is_online(entry->state);
-				if (info_last->online != info->online)
-					session->info_dirty = TRUE;
-			}
 		}
 
 		session_changed(session,

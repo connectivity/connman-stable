@@ -279,6 +279,7 @@ static int append_query(unsigned char *buf, unsigned int size,
 {
 	unsigned char *ptr = buf;
 	char *offset;
+	int len;
 
 	DBG("query %s domain %s", query, domain);
 
@@ -288,11 +289,12 @@ static int append_query(unsigned char *buf, unsigned int size,
 
 		tmp = strchr(offset, '.');
 		if (tmp == NULL) {
-			if (strlen(offset) == 0)
+			len = strlen(offset);
+			if (len == 0)
 				break;
-			*ptr = strlen(offset);
-			memcpy(ptr + 1, offset, strlen(offset));
-			ptr += strlen(offset) + 1;
+			*ptr = len;
+			memcpy(ptr + 1, offset, len);
+			ptr += len + 1;
 			break;
 		}
 
@@ -309,11 +311,12 @@ static int append_query(unsigned char *buf, unsigned int size,
 
 		tmp = strchr(offset, '.');
 		if (tmp == NULL) {
-			if (strlen(offset) == 0)
+			len = strlen(offset);
+			if (len == 0)
 				break;
-			*ptr = strlen(offset);
-			memcpy(ptr + 1, offset, strlen(offset));
-			ptr += strlen(offset) + 1;
+			*ptr = len;
+			memcpy(ptr + 1, offset, len);
+			ptr += len + 1;
 			break;
 		}
 
@@ -384,16 +387,16 @@ static int ns_resolv(struct server_data *server, struct request_data *req,
 
 		memcpy(alt + offset + altlen,
 			request + offset + altlen - domlen,
-				req->request_len - altlen + domlen);
+				req->request_len - altlen - offset + domlen);
 
 		if (server->protocol == IPPROTO_TCP) {
-			int req_len = req->request_len + domlen - 1;
+			int req_len = req->request_len + domlen - 2;
 
 			alt[0] = (req_len >> 8) & 0xff;
 			alt[1] = req_len & 0xff;
 		}
 
-		err = send(sk, alt, req->request_len + domlen + 1, 0);
+		err = send(sk, alt, req->request_len + domlen, 0);
 		if (err < 0)
 			return -EIO;
 
@@ -1330,7 +1333,7 @@ static gboolean udp_listener_event(GIOChannel *channel, GIOCondition condition,
 	return resolv(req, buf, query);
 }
 
-static int create_dns_listener(int protocol, const char *ifname)
+static int create_dns_listener(int protocol, struct listener_data *ifdata)
 {
 	GIOChannel *channel;
 	const char *proto;
@@ -1342,13 +1345,9 @@ static int create_dns_listener(int protocol, const char *ifname)
 	socklen_t slen;
 	int sk, type, v6only = 0;
 	int family = AF_INET6;
-	struct listener_data *ifdata;
 
-	DBG("interface %s", ifname);
 
-	ifdata = g_hash_table_lookup(listener_table, ifname);
-	if (ifdata == NULL)
-		return -ENODEV;
+	DBG("interface %s", ifdata->ifname);
 
 	switch (protocol) {
 	case IPPROTO_UDP:
@@ -1377,7 +1376,8 @@ static int create_dns_listener(int protocol, const char *ifname)
 	}
 
 	if (setsockopt(sk, SOL_SOCKET, SO_BINDTODEVICE,
-					ifname, strlen(ifname) + 1) < 0) {
+					ifdata->ifname,
+					strlen(ifdata->ifname) + 1) < 0) {
 		connman_error("Failed to bind %s listener interface", proto);
 		close(sk);
 		return -EIO;
@@ -1440,15 +1440,9 @@ static int create_dns_listener(int protocol, const char *ifname)
 	return 0;
 }
 
-static void destroy_udp_listener(const char *interface)
+static void destroy_udp_listener(struct listener_data *ifdata)
 {
-	struct listener_data *ifdata;
-
-	DBG("interface %s", interface);
-
-	ifdata = g_hash_table_lookup(listener_table, interface);
-	if (ifdata == NULL)
-		return;
+	DBG("interface %s", ifdata->ifname);
 
 	if (ifdata->udp_listener_watch > 0)
 		g_source_remove(ifdata->udp_listener_watch);
@@ -1456,15 +1450,9 @@ static void destroy_udp_listener(const char *interface)
 	g_io_channel_unref(ifdata->udp_listener_channel);
 }
 
-static void destroy_tcp_listener(const char *interface)
+static void destroy_tcp_listener(struct listener_data *ifdata)
 {
-	struct listener_data *ifdata;
-
-	DBG("interface %s", interface);
-
-	ifdata = g_hash_table_lookup(listener_table, interface);
-	if (ifdata == NULL)
-		return;
+	DBG("interface %s", ifdata->ifname);
 
 	if (ifdata->tcp_listener_watch > 0)
 		g_source_remove(ifdata->tcp_listener_watch);
@@ -1472,34 +1460,31 @@ static void destroy_tcp_listener(const char *interface)
 	g_io_channel_unref(ifdata->tcp_listener_channel);
 }
 
-static int create_listener(const char *interface)
+static int create_listener(struct listener_data *ifdata)
 {
 	int err;
 
-	err = create_dns_listener(IPPROTO_UDP, interface);
+	err = create_dns_listener(IPPROTO_UDP, ifdata);
 	if (err < 0)
 		return err;
 
-	err = create_dns_listener(IPPROTO_TCP, interface);
+	err = create_dns_listener(IPPROTO_TCP, ifdata);
 	if (err < 0) {
-		destroy_udp_listener(interface);
+		destroy_udp_listener(ifdata);
 		return err;
 	}
 
-	if (g_strcmp0(interface, "lo") == 0)
+	if (g_strcmp0(ifdata->ifname, "lo") == 0)
 		__connman_resolvfile_append("lo", NULL, "127.0.0.1");
 
 	return 0;
 }
 
-static void destroy_listener(const char *interface)
+static void destroy_listener(struct listener_data *ifdata)
 {
 	GSList *list;
 
-	if (interface == NULL)
-		return;
-
-	if (g_strcmp0(interface, "lo") == 0)
+	if (g_strcmp0(ifdata->ifname, "lo") == 0)
 		__connman_resolvfile_remove("lo", NULL, "127.0.0.1");
 
 	for (list = request_pending_list; list; list = list->next) {
@@ -1534,8 +1519,8 @@ static void destroy_listener(const char *interface)
 	g_slist_free(request_list);
 	request_list = NULL;
 
-	destroy_tcp_listener(interface);
-	destroy_udp_listener(interface);
+	destroy_tcp_listener(ifdata);
+	destroy_udp_listener(ifdata);
 }
 
 int __connman_dnsproxy_add_listener(const char *interface)
@@ -1557,19 +1542,30 @@ int __connman_dnsproxy_add_listener(const char *interface)
 	ifdata->udp_listener_watch = 0;
 	ifdata->tcp_listener_channel = NULL;
 	ifdata->tcp_listener_watch = 0;
-	g_hash_table_insert(listener_table, ifdata->ifname, ifdata);
 
-	err = create_listener(interface);
-	if (err < 0)
+	err = create_listener(ifdata);
+	if (err < 0) {
+		connman_error("Couldn't create listener for %s err %d",
+				interface, err);
+		g_free(ifdata->ifname);
+		g_free(ifdata);
 		return err;
+	}
+	g_hash_table_insert(listener_table, ifdata->ifname, ifdata);
 	return 0;
 }
 
 void __connman_dnsproxy_remove_listener(const char *interface)
 {
+	struct listener_data *ifdata;
+
 	DBG("interface %s", interface);
 
-	destroy_listener(interface);
+	ifdata = g_hash_table_lookup(listener_table, interface);
+	if (ifdata == NULL)
+		return;
+
+	destroy_listener(ifdata);
 
 	g_hash_table_remove(listener_table, interface);
 }

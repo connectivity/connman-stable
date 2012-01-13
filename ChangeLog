@@ -1,241 +1,642 @@
-ver 0.77.4
-	ofono: Don't set network index when device is removed
-	service: network_created is set only for hidden services
-	network: connman_network_set_nameservers() handle NULL argument correctly
-	notifier: Remove service from hash in error case
-	network: Call indicate error function in error case
-	tethering: Use already existing 'tether' bridge interface
-	build: Create src/builtin.h via BUILT_SOURCES
-	tools: Fix compilation in MeeGo
-	core: Fix compilation in MeeGo
-	plugins: Fix compilation in MeeGo
-	tools: Add SOCK_CLOEXEC to socket()
-	core: Add SOCK_CLOEXEC to socket()
-	plugins: Add SOCK_CLOEXEC to socket()
-	gweb: Add SOCK_CLOEXEC to socket()
-	gdhcp: Add SOCK_CLOEXEC to socket()
-	core: Add O_CLOEXEC to open()
-	plugins: Add O_CLOEXEC to open()
-	tools: Add O_CLOEXEC to open()
-	network: Fix failed to reconnect to 3G network when connect failed
-	bluetooth: Cleanup if technology driver register fails
-	Handle erroneous disconnection after 4way-handshake
-	gsupplicant: Add a function to enable or disable the selected network
-	network: Check device pointer when doing IPv6 autoconf
-	network: Disconnect network properly
-	inet: Cleanup the router solicitations handler properly
-	inet: Fix file descriptor leak when comparing subnets
-	gdhcp: Possible file descriptor leak
-	service: Remove the gateways when removing the service
-	service: Activate loose mode routing
-	ipconfig: Set/unset IPv4 rp_filter setting
-	wpad: Reference count service properly
-	dhcp: Reference count network properly
-	inet: Cleanup router solicitation callback properly after error
-	notifier: Don't unnecessarily report "online" state on disconnect
-	dnsproxy: Fix can't resolv hostname
-	service: Update service order when changing the favorite flag
-	service: Call __connman_service_disconnect from remove_service
-	ipconfig: Show IPv4.Configuration properties for FIXED
+ver 0.78:
+	Fix multiple issues with service connection states.
+	Fix multiple issues with technology handling.
+	Fix issue with DHCP file descriptor leakage.
+	Fix issue with open access points and WPS.
+	Fix issue with handling of cellular devices.
+	Fix issue with DNS proxy hostname resolving.
+	Add support for PPTP and L2TP VPN tunneling.
+	Add support for organized settings storage.
+	Add support for WiFi fast connect handling.
+	Add support for better WiFi error handling.
+	Add support for integrated WISPr handling.
 
-ver 0.77.3
-	wifi: Add NULL checks in interface create and remove
-	wifi: Device reference counting fix on scan
-	ofono: Remove 3G network after disabled 3G modem
-	session: Only disconnect online sevices
-	main: Cleanup ipconfig after service
-	service: Don't iterate over changing sequence
-	provider: Fix memory leak
-	provider: Remove provider if there is an error when connecting
-	ofono: Create the cellular network only when attached to the PS network
-	AUTHORS: Mention Jeff's contributions
-	AUTHORS: Mention Philippe's contributions
-	service: Add interface name matching in __connman_service_lookup().
-	device: Remove redundant connection numbers check
-	device: Remove connections counter
-	AUTHORS: Mention Danny's contributions
-	device: Disconnect a connected network before disabling the device
+ver 0.77:
+	Fix issue with iptables API breakage.
+	Fix issue with agent input handling.
+	Fix issue with empty cellular operator name.
+	Fix issue with reference counting for network objects.
+	Fix issue with missing D-Bus signals for proxy changes.
+	Fix issue with group identifier and hidden WiFi networks.
+	Fix issue with setting wrong gateway for PPP connections.
+	Fix issue with mismatch of stored IP configuration settings.
+	Fix issue with not stopping DHCP for IPv4 configuration.
+	Add support for remembering last IP address from DHCP.
+	Add support for EAP-GTC authentication method.
 
-ver 0.77.2
-	connection: Default gateway is changed when reorganizing services (Fixes BMC#22540)
-	network: Read only the ipconfig data if we have no address (Fixes BMC#22767)
-	service: Check NULL pointer when setting ipconfig (Fixes BMC#22766)
-	wifi: Implement network_changed gsupplicant hook
+ver 0.76:
+	Fix issue with loopback interface setup.
+	Fix issue with /etc/localtime being a symlink.
+	Fix issue with not handling dummy network devices.
+	Fix issue with not provisioning existing services.
+	Fix issue with running WPAD on IPv6 connections.
+	Fix issue with client certificate for TTLS/PEAP.
+	Remove internal element infrastructure.
 
-ver 0.77.1
-	ConnMan 0.77 code merge
+ver 0.75:
+	Fix issue with 3G connect timeout handling.
+	Fix issue with WiFi raw key PSK handling.
+	Fix issue with DHCP renewal timeout handling.
+	Fix issue with DHCP and empty nameserver list.
+	Add support for unit testing.
 
-ver 0.76.2
-	ofono: Network name is empty when operator is not available
-	network: Set driver pointer to NULL back if not ready (Fixes BMC#21705)
-	service : Fix put data on null pointer (Fixes BMC#21709)
+ver 0.74:
+	Fix issue with race condition in ready/online handling.
+	Fix issue with DHCP release callback handling.
+	Fix multiple issues with session API handling.
+	Add support for using DNS proxy for Tethering.
+	Add support for Private Network API.
+	Add support for Clock API.
 
-ver 0.76.1
-	ConnMan 0.76 code merge
+ver 0.73:
+	Update support for session API handling.
+	Add support for more advanced roaming policies.
+	Add support for EAP identity and passphrase queries.
+	Add support for IPv6 handling with cellular bearer.
+	Add support for main configuration file.
+	Remove deprecated profile interface.
 
-ver 0.69.6
-	service: Fix Manager.ConnectService D-Bus reply (Fixes BMC#14841)
-	tethering: Use tether device IP as DNS server (Fixes BMC#16847)
-	ntp: Fix ntpd_running return TRUE most of the time (Fixes BMC#16145)
+ver 0.72:
+	Fix issue with overwriting DNS servers from DHCP.
+	Fix issue with DHCP renewal with same configuration.
+	Fix issue with multiple memory leaks.
+	Add support for 6to4 tunneling.
 
-ver 0.69.5
-	core: Clock and timezone implementation
+ver 0.71:
+	Fix issue with not storing IPv6 privacy settings.
+	Fix issue with storing fixed and manual IP settings.
+	Fix issue with service state when PAN connection fails.
+	Fix issue with tethering and WiFi bridge handling.
+	Fix issue with autonomously activated contexts.
+	Fix issue with nameserver array for PACrunner.
+	Fix issue with network information memory leak.
+	Fix issue with double-free in statistics handling.
+	Fix issue with handling malformed profiles.
+	Fix issue with pending DHCP client requests.
+	Add initial support for TI shared transport handling.
 
-ver 0.69.4
-	tethering: Use /proc/sys/net/bridge to detect bridge support.
-	tethering: Add wifi interface to bridge after carrier on.
-	tethering: Fix tethering scripts.
-	main: Initial configuration support.
-	dhcp: Reset IP settings upon changes.
+ver 0.70:
+	Add support for reporting invalid WiFi passphrases.
+	Add support for IPv6 privacy extension.
+	Add support for IPv6 advanced features.
+	Add support for IPv6 nameserver settings.
+	Remove deprecated APN service settings.
 
-ver 0.69.3
-	Initial TI shared transport plugin implementation
+ver 0.69:
+	Fix issue with not handling DNS proxy failures gracefully.
+	Fix issue with double free in statistics handling.
+	Fix issue with early tethering bridge creation.
+	Add support for tethering property per technology.
+	Add support for initial WiFi tethering feature.
+	Add support for using PACrunner as proxy driver.
+	Add support for WPS as part of the security property.
 
-ver 0.69.2
-	Initial scan delays exponential backoff (Fixes BMC#13698)
-	Fix infinite recursion in oFono network disconnect
-	Do not add NULL domains to the domain list
+ver 0.68:
+	Fix issue with wrong name of PolicyKit configuration file.
+	Fix issue with inconsistency of WiFi scan states.
+	Fix issue with missing auto-reconnect and oFono.
+	Add support for vpnc based private networks.
+	Add support for WiFi Protected Setup handling.
+	Remove legacy WiFi plugin.
 
-ver 0.69.1
-	ConnMan 0.69 code merge
+ver 0.67:
+	Fix issue with oFono plugin and multiple online calls.
+	Fix issue with checking for AutoConnect service property.
+	Remove deprecated MCC and MNC service properties.
 
-ver 0.68.2
-	dnsproxy: Fallback to resolv.conf if dnsproxy fails
-	stats: Fix double free error
+ver 0.66:
+	Fix multiple set of memory leaks.
+	Fix issue with WPA supplicant phase2 values.
+	Fix issue with WiFi access points after kill/restart.
+	Fix issue with correct PACrunner configuration loading.
+	Add support for loading provision files at runtime.
+	Add support for setting proxy auto-configuration.
+	Add support for IPv6 auto-configured addresses.
 
-ver 0.68.1
-	ConnMan 0.68 code merge
+ver 0.65:
+	Use new WiFi plugin by default.
+	Fix issue with handling already powered devices.
+	Fix issue with handling proxy PAC option from DHCP.
+	Add support for handling regulatory domain settings.
+	Add support for handling IPv6 router advertisements.
+	Add support for handling IPv6 nameservers.
+	Add support for handling multiple search domains.
+	Add support for handling oFono modem lockdown.
+	Add support for handling IPv6 DNS connections.
+	Add support for IPv4 Link-Local negotiation.
+	Add support for USB CDC Tethering functionality.
 
-ver 0.67.1
-	ConnMan 0.67 code merge
+ver 0.64:
+	Update service name to net.connman domain.
+	Fix issue with disabling a technology twice.
+	Fix issue with using wrong string for Proxy.Method.
+	Fix issue with TCP connection lookup and DNS proxy.
+	Fix issue with TCP receive busy waits and DNS proxy.
+	Fix various issues with WPA Supplicant interaction.
+	Add support for chunk encoding to HTTP client.
+	Add support for internal HTTP client for portal detection.
+	Add support for internal DHCP server setup.
+	Add support for internal NAT and IP forwarding setup.
+	Add support for Bluetooth Tethering functionality.
+	Remove deprecated device and network D-Bus interfaces.
+	Remove support for dhclient plugin.
 
-ver 0.66.1
-	ConnMan 0.66 code merge
+ver 0.63:
+	Change to use nl80211/cfg80211 WiFi management by default.
+	Fix various issues with new WPA Supplicant interface.
+	Fix issue with not connecting failed networks at boot.
+	Fix issue with properly tracking RFKILL blocked state.
+	Fix issue with missing signals for IPv4/IPv6 gateway details.
+	Add support for using RTNL for setting IPv4/IPv6 details.
+	Add support for using PHONET_PIPE GPRS interfaces.
+	Add support for setting manual proxy configurations.
+	Add support for exporting proxy configurations to PACrunner.
+	Add support for combined home and roaming statistics.
+	Add support for OpenVPN connections.
+	Remove dependency on udev.
 
-ver 0.64.2
-	Already powered devices fix (Fixes BMC#10397).
-	gdhcp socket initialisation fix.
-	gresolv UDP socket error handling.
-	oFono signal strength proper reporting.
+ver 0.62:
+	Fix crash with non-existent or extra DHCP result options.
+	Fix crash when doing PEAP/TTLS authentication.
+	Fix issue with handling multiple data counters.
+	Fix issue with Bluetooth adapters without address.
+	Fix issue with multiple scanning attempts after disconnects.
+	Fix issue with VPN services when switching into offline mode.
+	Add support for storing statistics information in separate files.
+	Add support for verification of configuration file parameters.
+	Add support for handling time server values from DHCP.
+	Add support for allowing DNS over TCP within the DNS proxy.
+	Add support for loading proxy configurations into PACrunner.
+	Add support for WiFi plugin using new WPA Supplicant D-Bus API.
+	Add support for requesting passphrases via agents.
+	Remove default support for EDNS0 option.
 
-ver 0.64.1
-	ConnMan 0.64 code merge
+ver 0.61:
+	Add support for using the internal DHCP client by default.
+	Add support for latest PolicyKit framework.
+	Add support for new oFono D-Bus interfaces.
 
-ver 0.62.5
-	DNS proxy fix (Fixes BMC#9960)
-	Openconnect plugin security fix
+ver 0.60:
+	Fix issue with missing reset of proxy settings.
+	Fix issue with missing Ethernet property changed signal.
+	Fix issue with offline operation on already blocked devices.
+	Fix issue with offline mode and device powered changes.
+	Fix issue with portal detection and DHCP renewals.
+	Fix issue with connection attempts for removed networks.
+	Fix issue with stale pointers of networks.
 
-ver 0.62.4
-	DNS proxy fix (Fixes BMC#9834)
-	Technology disabling fix (Fixes BMC#8074)
-	get-proxy-autoconfig fix (Fixes BMC#9178)
-	WiFi plugin build fix.
+ver 0.59:
+	Fix issue with D-Bus object paths of VPN providers.
 
-ver 0.62.3
-	gsupplicant fixes (Fixes BMC#8750, #8792, #8324, #8363)
-	supplicant fix for autoconnecting after a failure.
-	Autoconnection of previously failed networks (Partly fixes BMC #8946).
-	udev rfkill list traversal fix (Fixes BMC #7915).
-	device fix (Fixes BMC #8075).
+ver 0.58:
+	Fix various issues around offline mode.
+	Fix various issues with VPN nameserver handling.
+	Add support for home/roaming network statistics.
+	Add support for EAP-TTLS WiFi configuration.
+	Add support for creating backtraces.
 
-ver 0.62.2
-	Fix a session and counter memory corruption (double free).
-	Create less stats file and less often.
-	Initialize stats file sze properly.
+ver 0.57:
+	Fix missing default profile creation.
+	Fix missing service integration of VPN providers.
+	Fix missing export of PAC information retrieved from DHCP.
+	Fix issue with detection of new Bluetooth devices.
+	Fix issue with offline mode handling.
+	Fix issue with device power handling.
 
-ver 0.62.1
-	ConnMan 0.62 code merge
+ver 0.56:
+	Fix issues with offline mode handling.
+	Fix service integration with VPN providers.
+	Add internal asynchronous resolver library.
+	Add internal DHCP client library.
+	Add support for using internal DHCP client.
+	Add support for WPAD proxy auto-configuration.
+	Add support for static IPv6 configuration.
+	Add support for DHCP provided domain names.
+	Add initial support for on-demand connections.
+	Remove uDHCP and resolvconf plugins.
 
-ver 0.60.5
-	Remove EDNS0 option (Fixes BMC #4818)
-	Implement DNS over TCP for dnsproxy
+ver 0.55:
+	Fix issue with 3G roaming status indication.
+	Fix issue with using -H option with dhclient.
+	Fix issue with loading WiFi SSID details for scanning.
+	Add support for setting host routes for DNS servers.
+	Add support for more detailed statistics counters.
+	Add support for internal DHCP client library.
 
-ver 0.60.4
-	Do not remove wifi network upon disconnection (Fixes BMC #7730, #7734)
-	Set WiFi task scanning flag when receiving a Scanning event
-	Implement WiFi network driver remove hook
-	RemoveProvider argument is an object path
-	Remove providers based on their VPN service path
+ver 0.54:
+	Fix issue with root requests and EDNS0 OPT records.
+	Fix issue with default gateway when route deletion fails.
+	Fix issue with group identifiers for cellular networks.
+	Fix issue with fixed IP settings from cellular networks.
+	Fix issue with nameserver settings and manual configuration.
+	Add support for cellular network name changes.
+	Add support for cellular signal strength changes.
+	Add support for actively scanning for hidden networks.
+	Add support for ASCII based WEP keys.
+	Add support for NTP timeserver updates.
+	Add support for PPP default route settings.
 
-ver 0.60.3
-	Fix bug to remove vpn services if offline mode is on (Fixes BMC # 6591)
-	Schedule delayed scan if disconnected from an AP (Fixes BMC #6831)
-	Use proper definition for finding device structure
-	Use __connman_device_get_service_type for getting service type
-	Call remove_network() on unsolicited disconnect
-	Fix ConnMan crash while disable wifi device (Fixes BMC #6772)
+ver 0.53:
+	Fix issue with supplicant and device scanning state cleaning.
+	Fix issue with Bluetooth PAN networks stay in connected state.
+	Fix issue with reference counting and connected state.
+	Fix issue with technology disabling on device removal.
+	Fix issue with two default gateways when using VPN.
+	Fix issue with static IPv4 configuration and signals.
+	Add support for splitting DHCP provided nameserver results.
+	Add support multiple nameservers in /etc/resolv.conf.
+	Add support for setting manual DNS server configuration.
+	Add support for exporting IPv4 gateway information.
+	Add support for newer versions of oFono API.
 
-ver 0.60.2
-	Ignore Bluetooth adapter if its MAC is zeroed (Fixes BMC #6211, #6906,
-	#5796)
-	Handle potential NULL pointer with DHCP options
-	Fix a crash when doing PEAP/TTLS authentication (Fixes BMC #6970)
+ver 0.52:
+	Fix issue with new "connected" states.
+	Fix issue with hidden networks and PSK.
+	Fix issue with DHCP and Bluetooth PAN.
+	Fix issue when disconnecting PAN networks.
+	Add support for application sessions.
+	Add plugin for hh2serial GPS support.
 
-ver 0.60.1
-	ConnMan 0.60 code merge
+ver 0.51:
+	Fix issue with missing device power toggling.
+	Fix issue with D-Bus object path on device removal.
+	Add support for WiFi portal detection.
+	Add support for configuring static gateways.
+	Remove unneeded plugin for Option HSO support.
+	Remove unneeded plugin for Ericsson MBM support.
 
-ver 0.59.1
-	ConnMan 0.59 code merge
+ver 0.50:
+	Fix configuration loading for unknown services.
+	Fix IP method setting of Ethernet plugin.
 
-ver 0.57.3
-	Save profile when enabling device while offline (Fixes BMC #5286)
+ver 0.49:
+	Fix issue with WiFi power changes.
+	Fix issue with Bluetooth device startup.
+	Fix issue with host route settings for VPN.
+	Fix issue with processing of RFKILL events.
+	Fix some WPA Enterprise privacy issues.
+	Add support for basic Ethernet information.
+	Add support for static IP settings.
 
-ver 0.57.2
-	Bluetooth network removal when adapter is unplugged (Fixes BMC #5119)
-	Disable technology when removing device
+ver 0.48:
+	Fix signal strength calculation when quality is not provided.
+	Fix issues with wpa_supplicant state tracking.
+	Fix faulty removal of IP address from interface.
+	Fix permissions of newly created /etc/resolv.conf file.
+	Fix DNS proxy handling when in offline mode.
+	Add support for EDNS0 resolver option.
+	Add workaround for large EDNS0 queries.
+	Add workaround for DHCP startup failures with WiFi networks.
+	Add support for handling hostnames and domainnames.
+	Add support for IPv4 configuration via service interface.
+	Add support for fixed and manual IPv4 configuration.
+	Add support for default service changed notifier.
+	Add support for clearing failure state via service removal.
+	Add support for OpenConnect VPN connections.
+	Add support for IEEE 802.1x WiFi networks.
+	Add support for roaming between WPA and WPA2 networks.
+	Add various generic D-Bus helpers and use them.
+	Remove special handling of Ethernet devices.
 
-ver 0.57.1
-	ConnMan 0.57 code merge
+ver 0.47:
+	Fix segmentation fault on resolver shutdown.
+	Fix issue with adding nameserver that doesn't exist.
+	Fix issue when no broadcast address is given.
+	Fix issue with missing property changed signal.
+	Add checks for invalid supplicant state transitions.
+	Add initial version of oFono GPRS support.
+	Add support for dynamic debug framework.
 
-ver 0.54.4
-	Always create a default profile (Fixes BMC #5024)
-	Disable offline devices upon device_set_connected(TRUE) calls
-	Set powered_pending from device_set_powered (Fixes BMC #3398)
-	Forward device_enable() error from enable_technolgy()
-	Do not try to enable a device if it's rfkill blocked (Fixes BMC #3719)
-	Toggle the powered_pending device flag if op succeeds (Fixes BMC #2640)
-	Use __connman_device_[enable|disable] from set_powered
-	Toggle offline mode only if device enablement succeeds
-	Disable offline mode when enabling a technology from offline mode
+ver 0.46:
+	Fix reconnect issue when power off or disabling the device.
+	Remove problematic retry on failure code path.
 
-ver 0.54.3
-	Return html fetching error when recv returns 0 (Fixes BCM #3697)
-	Fix PATH of adapter_watch in bluetooth plugin (Fixes BCM #3897)
+ver 0.45:
+	Fix crash with connect timeout and second connect attempt.
+	Fix reconnect issues after suspend or roaming attempt.
 
-ver 0.54.2
-	Fix SEGV at first startup
-	Fix connman_wifi_load_ssid
-	Fix crash in dhclient release
-	Create service ipconfig only when it's NULL
+ver 0.44:
+	Fix command line options for device filtering.
+	Fix issue with network reference in MBM support.
+	Fix handling when losing network access in MBM plugin.
+	Fix broken libiWmxSDK callback parameter handling.
+	Add work around Intel WiMAX SDK API breakage.
 
-ver 0.54.1:
-	ConnMan 0.54 code merge
+ver 0.43:
+	Fix issue with missing scanning after power up.
+	Fix issue with udev versus /dev/rfkill event processing.
+	Fix issue with powered down device on connection attempt.
+	Add support for multiple connection attempts.
+	Add support for tracking the operation state.
+	Add full support for Ericsson MBM cellular devices.
 
-ver 0.52.1:
-	Remove supplicant and device scanning state cleaning
-	ofono API refactoring: Rename netreg Operator property to Name
-	ConnMan 0.52 code merge
+ver 0.42:
+	Fix issue with switching between hidden WiFi networks.
+	Fix issue with missing scanning after disconnect.
+	Fix issue with not triggering auto-connect in some cases.
 
-ver 0.50.4:
-	Remove erroneous DHCP method setting from bluetooth plugin
-	Load ipconfig setting from __connman_service_create_ipconfig()
-	Reset ipconfig index
-	Add __connman_ipconfig_set_index() helper
-	Reference PAN network before disconnecting
-	Reset connman_network device pointer when it is no longer referenced
-	Do not set network index from PAN disconnect reply
-	ONLINE and LOGIN are also "connected" states
-	Use psk for building hidden WPA SSID group
+ver 0.41:
+	Fix race condition with WiFi devices and RFKILL.
+	Fix issue with WiFi connect/disconnect and some drivers.
+	Fix issue with WEP encryption and staging drivers.
+	Fix issue with wrong setup of loopback interfaces.
 
-ver 0.50.3:
-	Enable/Disable device when toggling the powered state
-	Use udev_device_get_devtype before __connman_inet_get_device_type
-	Set network->device as NULL when the device is removed
+ver 0.40:
+	Fix issue with wrong setting of initial AutoConnect value.
+	Fix issue with IP configuration and loopback devices.
+	Fix issue with build system and include directory.
+	Fix wrong variable for dhclient-script location.
+	Fix disconnect race condition with Bluetooth service.
+	Add support for ignoring bonding Ethernet interfaces.
 
-ver 0.50.2:
-	Handle the case that MobileNetworkCodeLength is not provided.
-	Correct the modem properties key name.
-	Fix convert_wifi_security for psk string.
+ver 0.39:
+	Fix file permissions for profile storage.
+	Fix service resorting when they are in different states.
+	Fix support for handling Bluetooth PAN devices.
+	Add support for AutoConnect property of services.
+	Add support for creating, modifying and removing profiles.
+	Add support for fully flexible task handling framework.
+	Add support for more generic RTNL handling and notifications.
+	Add support for full non-recursive build.
 
-ver 0.50.1:
-	Export MCC and MNC for cellular services.
+ver 0.38:
+	Fix broken check for security modes.
+	Fix requirement of inotify when loopback support is disabled.
+
+ver 0.37:
+	Fix missing update of signal strength from scan results.
+	Fix error handling in case when passphrase is required.
+	Add support for PassphraseRequired property.
+	Add missing check for WiFi security modes.
+
+ver 0.36:
+	Fix missing reset of network reference when disconnecting.
+	Fix wrong variable reference when sending technology replies.
+	Fix wrong identifiers of D-Bus error names.
+
+ver 0.35:
+	Fix missing auto-connect trigger on Ethernet device removal.
+	Fix availability listing for devices without attached drivers.
+	Fix signals for connected and default technologies.
+	Fix notification to use service types instead of device types.
+	Fix potential pending scan result reply messages after removal.
+	Add support for blocking enable and disable technology changes.
+
+ver 0.34:
+	Fix setup of udev context before loading any plugins.
+	Fix rearming the scan trigger if a device got disabled.
+	Fix device power state changes tracking with RFKILL notifications.
+	Fix wrong usage of device types instead of service types.
+	Fix connect method to handle non-WiFi services.
+
+ver 0.33:
+	Add support for RFKILL changes of the WiFi subsystem.
+	Fix state value of Network Manager compatibility support.
+
+ver 0.32:
+	Fix broken device unregistration on removal.
+	Fix WiMAX device detection handling.
+
+ver 0.31:
+	Fix missing enforcement of offline mode for new devices.
+	Add support for persistent storage of offline mode.
+	Add support for persistent storage of device power state.
+	Remove deprecated and unused network storage callbacks.
+
+ver 0.30:
+	Fix issue where hidden network could show up in service list.
+	Fix issue with asynchronous notification of scan requests.
+	Fix message reference leak when adding interface fails.
+	Fix problem when removing network during inactive state.
+	Remove broken and unused callback for joining networks.
+	Remove deprecated device and network interface methods.
+	Remove test scripts for deprecated interface methods.
+
+ver 0.29:
+	Fix missing signal emission for offline mode changes.
+	Fix signal emission for changes in technology properties.
+	Rename Technologies property to AvailableTechnologies.
+
+ver 0.28:
+	Fix another reference counting imbalance when adding networks.
+	Revert supplicant change to always reset scanning after results.
+
+ver 0.27:
+	Fix missing disarming of the connection timeout.
+	Fix handling of multiple supplicant disconnect attempts.
+	Fix simultaneous connects from different technologies limitation.
+
+ver 0.26:
+	Fix broken handling of auto-connect logic.
+	Fix handling of out-of-range access points.
+	Fix support for connecting to hidden networks.
+	Fix reference counting for networks with same SSID.
+	Fix issue with WiFi interfaces not getting switched off.
+	Fix problems with delayed service list updates.
+	Fix disconnect/abort of connection attempts.
+
+ver 0.25:
+	Fix showing of WiFi networks with less than 25% signal strength.
+	Fix potential segmentation fault with network passphrases.
+
+ver 0.24:
+	Fix handling of initial device powered state.
+	Fix missing Powered property changed signals.
+	Fix canceling of a network connection attempt.
+	Fix stalled configuration issue with supplicant.
+	Fix detection of association errors from supplicant.
+	Fix issue with wrong scanning state information.
+	Fix hidden SSID detection routines.
+	Fix visible Ethernet services even without carrier.
+	Add global method call to request scanning.
+	Add support for global technologies list.
+	Add support for delaying service list updates.
+	Update the overall D-Bus API documentation.
+
+ver 0.23:
+	Fix dhclient probe/remove race condition.
+	Fix handling of disconnected services during auto-connect.
+	Add support for proper group name of hidden networks.
+	Add support for storing SSID details of hidden networks.
+
+ver 0.22:
+	Fix wrong auto-connect procedure after user connection.
+	Fix invalid update of already connected network.
+	Fix idle state handling after disconnecting device.
+	Fix disconnect race condition in WiFi supplicant.
+	Fix WiFi signal strength reporting.
+
+ver 0.21:
+	Add udev based network device detection.
+	Add support for global auto-connect feature.
+	Add support for basic service drag and drop.
+	Fix missing passphrase cleanup on service removal.
+	Fix potential duplicate network creation.
+	Fix handling of WEP shared keys.
+
+ver 0.20:
+	Add plugin for Intel WiMAX SDK support.
+	Add special handling for default vendor SSIDs.
+	Add support for default gateway in different network.
+	Add support for automatic switching of default gateway.
+	Add support for asynchronous handling of Powered property.
+	Add support for connecting/disconnecting Ethernet services.
+	Add support for more detailed error states of services.
+	Add support for clearing error state via ClearProperty.
+	Fix error code for invalid or unknown properties.
+	Fix various timeout handling issues.
+	Remove Policy and Priority device and network properties.
+
+ver 0.19:
+	Add hidden networks to the service list.
+	Add support for storing the service name.
+	Fix service list sorting for connected services.
+	Fix missing cancel command when operation times out.
+	Fix various issues with service favorite handling.
+	Remove Available and Remember network properties.
+
+ver 0.18:
+	Add support for asynchronous service connect method.
+	Fix broken storage of service favorite details.
+
+ver 0.17:
+	Add AT chat library implementation.
+	Fix service lookup for WiFi and WiMAX devices.
+	Fix service state signal emission and error handling.
+	Fix storing and loading of configured passphrases for services.
+
+ver 0.16:
+	Update Intel OSPM support to latest specification.
+	Add initial support for new service interface.
+	Add support for builtin plugins.
+	Add extra warning if no nameserver is defined.
+	Add error reporting for state and storage directory creation.
+	Add error message for network and device storing failures
+	Fix stale entry in gateway list after connection changes.
+	Fix handling of DHCP results with no nameserver.
+	Fix infinite loop for service lookup.
+	Fix various format string warnings.
+
+ver 0.15:
+	Detect VMware network interface and ignore them.
+	Fix setting of scan_ssid for hidden networks.
+	Fix empty network name property.
+
+ver 0.14:
+	Add support for detecting DHCP failures.
+	Add support for joining hidden WiFi networks.
+	Add support for device and network address property.
+	Add support for default /etc/resolv.conf generation.
+	Fix issue with wrong address setting for loopback.
+	Fix detection of WiFi access point changes.
+	Fix crash with blob properties.
+
+ver 0.13:
+	Add support for notification infrastructure.
+	Add fully dynamic property storage capabilities.
+	Fix broken loading of last network on bootup.
+	Fix crash when unplugging WiFi devices.
+	Rename OSPM plugin to Intel OSPM plugin.
+	Rename WiMAX plugin to Intel WiMAX SDK plugin.
+
+ver 0.12:
+	Fix connection state change handling.
+	Fix network list enumeration.
+	Fix broken driver matching for devices.
+	Fix issue with network identifier lookup.
+
+ver 0.11:
+	Add plugin priority handling.
+	Add network type for WiMAX.
+	Fix network protocol selection for Bluetooth PAN.
+	Fix parameters for Bluetooth PAN disconnect method.
+
+ver 0.10:
+	Fix races with connection signals.
+	Fix automatic switching of default connection.
+
+ver 0.9:
+	Rename FlightMode to OfflineMode.
+	Add static IPv4 setting support for Ethernet devices.
+	Add extra options to exclude devices and plugins.
+	Add support for toggling debug output.
+	Add support for ScanInterval property.
+	Fix handling of disconnect commands from applications.
+	Fix detection of networks that are out of range.
+	Fix setting network remember status.
+	Fix argument type checking of properties.
+
+ver 0.8:
+	Add Device and Network property to connection interface.
+	Add option to disable installation of data files.
+	Add command line option to show version number.
+	Fix signal emission for network changes.
+
+ver 0.7:
+	Add basic support for flight mode.
+	Add support for multiple storage drivers.
+	Add support for RTNL newlink watch API.
+	Add support for different security privileges.
+	Add support for device and network priorities.
+	Add functions for setting network properties.
+	Fix issue with listing devices without a driver.
+	Fix issue with WiFi scanning indication.
+	Fix detection of WiFi security changes.
+	Update WiFi driver to use new network helpers.
+	Install different D-Bus configuration for PolicyKit.
+
+ver 0.6:
+	Add CONNMAN_API_SUBJECT_TO_CHANGE definition.
+	Add detailed configuration options.
+	Add various D-Bus helper functions.
+	Add generic device driver infrastructure.
+	Add generic network driver infrastructure.
+	Add property for WiFi network mode.
+	Add property for network interface name.
+	Add property for global connection policy.
+	Add support for verbose compiler warnings.
+	Add support for device detection via udev.
+	Add support for systems with udhcpc.
+	Add support for Bluetooth PAN networks.
+	Fix WiFi issue with DHCP restart after handshake.
+	Fix exported symbols list creation.
+	Remove deprecated and unused plugins.
+
+ver 0.5:
+	Add support for handling Bluetooth adapters.
+	Add support for activating wpa_supplicant on demand.
+	Add Device property to network objects.
+	Add Scanning property to device objects.
+	Fix Name property of device objects.
+	Fix WiFi SSID to object path conversion.
+	Fix duplicate wireless scan results.
+	Fix built issue with libudev and uClibc.
+	Fix issues with element registration failures.
+
+ver 0.4:
+	Add DNS proxy resolver plugin.
+	Add support for default connections.
+	Add support for gateway change notifications.
+	Add signal strength property for connections.
+	Add property for connection type.
+	Fix issue with carrier detection.
+	Fix broken resolvconf plugin.
+
+ver 0.3:
+	Add support for automatically connecting known networks.
+	Add improved framework for handling resolver details.
+	Add generic signal strength property.
+	Fix bridge and WiMAX device detection.
+	Fix network listing for Ethernet devices.
+
+ver 0.2:
+	Add support for indicating network changes.
+	Add support for signal strength property.
+	Add support for unique device names.
+	Fix broken device enumeration.
+	Fix issue with device removal callback.
+	Fix issue with wpa_supplicant disconnecting.
+	Fix D-Bus access policy configuration.
+
+ver 0.1:
+	Initial public release.

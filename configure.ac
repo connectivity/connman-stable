@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(connman, 0.77.4)
+AC_INIT(connman, 0.78)
 
 AM_INIT_AUTOMAKE([foreign subdir-objects color-tests])
 AM_CONFIG_HEADER(config.h)
@@ -104,6 +104,9 @@ AC_ARG_ENABLE(openconnect,
 if (test "${enable_openconnect}" != "no"); then
 	if (test -z "${path_openconnect}"); then
 		AC_PATH_PROG(OPENCONNECT, [openconnect], [], $PATH:/sbin:/usr/sbin)
+		if (test -z "${OPENCONNECT}"); then
+			AC_MSG_ERROR(openconnect binary not found)
+		fi
 	else
 		OPENCONNECT="${path_openconnect}"
 		AC_SUBST(OPENCONNECT)
@@ -111,12 +114,6 @@ if (test "${enable_openconnect}" != "no"); then
 fi
 AM_CONDITIONAL(OPENCONNECT, test "${enable_openconnect}" != "no")
 AM_CONDITIONAL(OPENCONNECT_BUILTIN, test "${enable_openconnect}" = "builtin")
-
-AC_ARG_ENABLE(portal,
-	AC_HELP_STRING([--enable-portal], [enable portal detection support]),
-			[enable_portal=${enableval}], [enable_portal="no"])
-AM_CONDITIONAL(PORTAL, test "${enable_portal}" != "no")
-AM_CONDITIONAL(PORTAL_BUILTIN, test "${enable_portal}" = "builtin")
 
 AC_ARG_WITH(openvpn, AC_HELP_STRING([--with-openvpn=PROGRAM],
         [specify location of openvpn binary]), [path_openvpn=${withval}])
@@ -127,6 +124,9 @@ AC_ARG_ENABLE(openvpn,
 if (test "${enable_openvpn}" != "no"); then
 	if (test -z "${path_openvpn}"); then
 		AC_PATH_PROG(OPENVPN, [openvpn], [], $PATH:/sbin:/usr/sbin)
+		if (test -z "${OPENVPN}"); then
+			AC_MSG_ERROR(openvpn binary not found)
+		fi
 	else
 		OPENVPN="${path_openvpn}"
 		AC_SUBST(OPENVPN)
@@ -144,6 +144,9 @@ AC_ARG_ENABLE(vpnc,
 if (test "${enable_vpnc}" != "no"); then
 	if (test -z "${path_vpnc}"); then
 		AC_PATH_PROG(VPNC, [vpnc], [], $PATH:/sbin:/usr/sbin)
+		if (test -z "${VPNC}"); then
+			AC_MSG_ERROR(vpnc binary not found)
+		fi
 	else
 		VPNC="${path_vpnc}"
 		AC_SUBST(VPNC)
@@ -151,6 +154,50 @@ if (test "${enable_vpnc}" != "no"); then
 fi
 AM_CONDITIONAL(VPNC, test "${enable_vpnc}" != "no")
 AM_CONDITIONAL(VPNC_BUILTIN, test "${enable_vpnc}" = "builtin")
+
+AC_ARG_ENABLE(l2tp,
+	AC_HELP_STRING([--enable-l2tp], [enable l2tp support]),
+			[enable_l2tp=${enableval}], [enable_l2tp="no"])
+if (test "${enable_l2tp}" != "no"); then
+	if (test -z "${path_pppd}"); then
+		AC_PATH_PROG(PPPD, [pppd], [/usr/sbin/pppd], $PATH:/sbin:/usr/sbin)
+	else
+		PPPD="${path_pppd}"
+		AC_SUBST(PPPD)
+	fi
+	AC_CHECK_HEADERS(pppd/pppd.h, dummy=yes,
+			AC_MSG_ERROR(ppp header files are required))
+	if (test -z "${path_l2tp}"); then
+		AC_PATH_PROG(L2TP, [xl2tpd], [/usr/sbin/xl2tpd], $PATH:/sbin:/usr/sbin)
+	else
+		L2TP="${path_l2tp}"
+		AC_SUBST(L2TP)
+	fi
+fi
+AM_CONDITIONAL(L2TP, test "${enable_l2tp}" != "no")
+AM_CONDITIONAL(L2TP_BUILTIN, test "${enable_l2tp}" = "builtin")
+
+AC_ARG_ENABLE(pptp,
+	AC_HELP_STRING([--enable-pptp], [enable pptp support]),
+			[enable_pptp=${enableval}], [enable_pptp="no"])
+if (test "${enable_pptp}" != "no"); then
+	if (test -z "${path_pppd}"); then
+		AC_PATH_PROG(PPPD, [pppd], [/usr/sbin/pppd], $PATH:/sbin:/usr/sbin)
+	else
+		PPPD="${path_pppd}"
+		AC_SUBST(PPPD)
+	fi
+	AC_CHECK_HEADERS(pppd/pppd.h, dummy=yes,
+			AC_MSG_ERROR(ppp header files are required))
+	if (test -z "${path_pptp}"); then
+		AC_PATH_PROG(PPTP, [pptp], [/usr/sbin/pptp], $PATH:/sbin:/usr/sbin)
+	else
+		PPTP="${path_pptp}"
+		AC_SUBST(PPTP)
+	fi
+fi
+AM_CONDITIONAL(PPTP, test "${enable_pptp}" != "no")
+AM_CONDITIONAL(PPTP_BUILTIN, test "${enable_pptp}" = "builtin")
 
 AC_ARG_ENABLE(loopback,
 	AC_HELP_STRING([--enable-loopback], [enable loopback support]),

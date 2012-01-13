@@ -4,19 +4,18 @@ AM_MAKEFLAGS = --no-print-directory
 includedir = @includedir@/connman
 
 include_HEADERS = include/types.h include/log.h include/plugin.h \
-			include/notifier.h \
-			include/storage.h include/service.h \
+			include/notifier.h include/service.h \
 			include/resolver.h include/ipconfig.h \
-			include/device.h include/network.h include/inet.h
+			include/device.h include/network.h include/inet.h \
+			include/storage.h
 
 nodist_include_HEADERS = include/version.h
 
 noinst_HEADERS = include/rtnl.h include/task.h \
-			include/dbus.h include/rfkill.h include/option.h \
-			include/profile.h include/provider.h \
+			include/dbus.h include/option.h \
+			include/provider.h \
 			include/utsname.h include/timeserver.h include/proxy.h \
-			include/location.h include/technology.h \
-			include/setting.h
+			include/technology.h include/setting.h
 
 local_headers = $(foreach file,$(include_HEADERS) $(nodist_include_HEADERS) \
 			$(noinst_HEADERS), include/connman/$(notdir $(file)))
@@ -71,14 +70,14 @@ src_connmand_SOURCES = $(gdbus_sources) $(gdhcp_sources) \
 			src/main.c src/connman.h src/log.c \
 			src/error.c src/plugin.c src/task.c \
 			src/device.c src/network.c src/connection.c \
-			src/manager.c src/profile.c src/service.c \
+			src/manager.c src/service.c \
 			src/clock.c src/timezone.c \
 			src/agent.c src/notifier.c src/provider.c \
 			src/resolver.c src/ipconfig.c src/detect.c src/inet.c \
 			src/dhcp.c src/rtnl.c src/proxy.c \
 			src/utsname.c src/timeserver.c src/rfkill.c \
 			src/storage.c src/dbus.c src/config.c \
-			src/technology.c src/counter.c src/location.c \
+			src/technology.c src/counter.c src/ntp.c \
 			src/session.c src/tethering.c src/wpad.c src/wispr.c \
 			src/stats.c src/iptables.c src/dnsproxy.c src/6to4.c
 
@@ -186,7 +185,7 @@ tools_alg_test_LDADD = @GLIB_LIBS@
 unit_test_session_SOURCES = $(gdbus_sources) src/log.c src/dbus.c \
 		unit/test-session.c unit/utils.c unit/manager-api.c \
 		unit/session-api.c unit/test-connman.h
-unit_test_session_LDADD = @GLIB_LIBS@ @DBUS_LIBS@
+unit_test_session_LDADD = @GLIB_LIBS@ @DBUS_LIBS@ -ldl
 unit_objects += $(unit_test_session_OBJECTS)
 endif
 
@@ -199,7 +198,10 @@ test_scripts = test/get-state test/list-profiles test/list-services \
 		test/set-nameservers test/set-domains test/find-service \
 		test/get-services test/get-proxy-autoconfig test/set-proxy \
 		test/enable-tethering test/disable-tethering test/backtrace \
-		test/test-session test/provision-service
+		test/test-session test/provision-service test/test-supplicant \
+		test/test-new-supplicant test/service-move-before \
+		test/set-global-timeservers test/get-global-timeservers \
+		test/test-clock
 
 if TEST
 testdir = $(pkglibdir)/test
@@ -231,7 +233,6 @@ DISTCHECK_CONFIGURE_FLAGS = --disable-gtk-doc \
 				--enable-google \
 				--enable-meego \
 				--enable-client \
-				--enable-portal \
 				--enable-hh2serial-gps \
 				--enable-ntpd \
 				--enable-openconnect \
@@ -258,9 +259,9 @@ include/connman/version.h: include/version.h
 	$(AM_V_at)$(MKDIR_P) include/connman
 	$(AM_V_GEN)$(LN_S) $(abs_top_builddir)/$< $@
 
-include/connman/%.h: include/%.h
+include/connman/%.h: $(abs_top_srcdir)/include/%.h
 	$(AM_V_at)$(MKDIR_P) include/connman
-	$(AM_V_GEN)$(LN_S) $(abs_top_srcdir)/$< $@
+	$(AM_V_GEN)$(LN_S) $< $@
 
 clean-local:
 	@$(RM) -rf include/connman

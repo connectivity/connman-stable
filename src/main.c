@@ -293,12 +293,6 @@ int main(int argc, char *argv[])
 			perror("Failed to create storage directory");
 	}
 
-	if (mkdir(STORAGEDIR "/stats", S_IRUSR | S_IWUSR | S_IXUSR |
-				S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) < 0) {
-		if (errno != EEXIST)
-			perror("Failed to create statistics directory");
-	}
-
 	umask(0077);
 
 	main_loop = g_main_loop_new(NULL, FALSE);
@@ -326,7 +320,7 @@ int main(int argc, char *argv[])
 
 	g_dbus_set_disconnect_function(conn, disconnect_callback, NULL, NULL);
 
-	__connman_log_init(option_debug, option_detach);
+	__connman_log_init(argv[0], option_debug, option_detach);
 
 	__connman_dbus_init(conn);
 
@@ -334,10 +328,9 @@ int main(int argc, char *argv[])
 
 	parse_config(config);
 
-	__connman_storage_init();
+	__connman_storage_migrate();
 	__connman_technology_init();
 	__connman_notifier_init();
-	__connman_location_init();
 	__connman_service_init();
 	__connman_provider_init();
 	__connman_network_init();
@@ -348,7 +341,6 @@ int main(int argc, char *argv[])
 	__connman_tethering_init();
 	__connman_counter_init();
 	__connman_manager_init();
-	__connman_profile_init();
 	__connman_config_init();
 	__connman_stats_init();
 	__connman_clock_init();
@@ -364,8 +356,6 @@ int main(int argc, char *argv[])
 	__connman_connection_init();
 
 	__connman_plugin_init(option_plugin, option_noplugin);
-
-	__connman_storage_init_profile();
 
 	__connman_rtnl_start();
 	__connman_dhcp_init();
@@ -400,7 +390,6 @@ int main(int argc, char *argv[])
 	__connman_clock_cleanup();
 	__connman_stats_cleanup();
 	__connman_config_cleanup();
-	__connman_profile_cleanup();
 	__connman_manager_cleanup();
 	__connman_counter_cleanup();
 	__connman_agent_cleanup();
@@ -410,10 +399,8 @@ int main(int argc, char *argv[])
 	__connman_network_cleanup();
 	__connman_service_cleanup();
 	__connman_ipconfig_cleanup();
-	__connman_location_cleanup();
 	__connman_notifier_cleanup();
 	__connman_technology_cleanup();
-	__connman_storage_cleanup();
 
 	__connman_dbus_cleanup();
 
@@ -425,6 +412,8 @@ int main(int argc, char *argv[])
 
 	if (config)
 		g_key_file_free(config);
+
+	g_free(option_debug);
 
 	return 0;
 }

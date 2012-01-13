@@ -22,6 +22,7 @@
 #ifndef __CONNMAN_PROVIDER_H
 #define __CONNMAN_PROVIDER_H
 
+#include <glib.h>
 #include <connman/types.h>
 
 #ifdef __cplusplus
@@ -89,6 +90,7 @@ int connman_provider_append_route(struct connman_provider *provider,
 					const char *key, const char *value);
 
 const char *connman_provider_get_driver_name(struct connman_provider *provider);
+const char *connman_provider_get_save_group(struct connman_provider *provider);
 
 struct connman_provider_driver {
 	const char *name;
@@ -97,6 +99,7 @@ struct connman_provider_driver {
 	int (*remove) (struct connman_provider *provider);
 	int (*connect) (struct connman_provider *provider);
 	int (*disconnect) (struct connman_provider *provider);
+	int (*save) (struct connman_provider *provider, GKeyFile *keyfile);
 };
 
 int connman_provider_driver_register(struct connman_provider_driver *driver);

@@ -34,6 +34,7 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
+#include <net/if.h>
 
 #include "gresolv.h"
 
@@ -97,7 +98,7 @@ struct resolv_nameserver {
 };
 
 struct _GResolv {
-	gint ref_count;
+	int ref_count;
 
 	int result_family;
 
@@ -454,7 +455,7 @@ static void rfc3484_sort_results(struct resolv_lookup *lookup)
 
 static void sort_and_return_results(struct resolv_lookup *lookup)
 {
-	char buf[100];
+	char buf[INET6_ADDRSTRLEN + 1];
 	GResolvResultStatus status;
 	char **results = g_try_new0(char *, lookup->nr_results + 1);
 	int i, n = 0;
@@ -462,18 +463,20 @@ static void sort_and_return_results(struct resolv_lookup *lookup)
 	if (!results)
 		return;
 
+	memset(buf, 0, INET6_ADDRSTRLEN + 1);
+
 	rfc3484_sort_results(lookup);
 
 	for (i = 0; i < lookup->nr_results; i++) {
 		if (lookup->results[i].dst.sa.sa_family == AF_INET) {
 			if (inet_ntop(AF_INET,
 					&lookup->results[i].dst.sin.sin_addr,
-					buf, sizeof(buf)) == NULL)
+					buf, sizeof(buf) - 1) == NULL)
 				continue;
 		} else if (lookup->results[i].dst.sa.sa_family == AF_INET6) {
 			if (inet_ntop(AF_INET6,
 					&lookup->results[i].dst.sin6.sin6_addr,
-					buf, sizeof(buf)) == NULL)
+					buf, sizeof(buf) - 1) == NULL)
 				continue;
 		} else
 			continue;
@@ -758,6 +761,26 @@ static int connect_udp_channel(struct resolv_nameserver *nameserver)
 		return -EIO;
 	}
 
+	/*
+	 * If nameserver points to localhost ip, their is no need to
+	 * bind the socket on any interface.
+	 */
+	if (nameserver->resolv->index > 0 &&
+			strncmp(nameserver->address, "127.0.0.1", 9) != 0) {
+		char interface[IF_NAMESIZE];
+
+		memset(interface, 0, IF_NAMESIZE);
+		if (if_indextoname(nameserver->resolv->index,
+						interface) != NULL) {
+			if (setsockopt(sk, SOL_SOCKET, SO_BINDTODEVICE,
+						interface, IF_NAMESIZE) < 0) {
+				close(sk);
+				freeaddrinfo(rp);
+				return -EIO;
+			}
+		}
+	}
+
 	if (connect(sk, rp->ai_addr, rp->ai_addrlen) < 0) {
 		close(sk);
 		freeaddrinfo(rp);
@@ -824,7 +847,7 @@ GResolv *g_resolv_ref(GResolv *resolv)
 	if (resolv == NULL)
 		return NULL;
 
-	g_atomic_int_inc(&resolv->ref_count);
+	__sync_fetch_and_add(&resolv->ref_count, 1);
 
 	return resolv;
 }
@@ -836,7 +859,7 @@ void g_resolv_unref(GResolv *resolv)
 	if (resolv == NULL)
 		return;
 
-	if (g_atomic_int_dec_and_test(&resolv->ref_count) == FALSE)
+	if (__sync_fetch_and_sub(&resolv->ref_count, 1) != 1)
 		return;
 
 	while ((query = g_queue_pop_head(resolv->query_queue)))
@@ -877,13 +900,12 @@ gboolean g_resolv_add_nameserver(GResolv *resolv, const char *address,
 	nameserver->address = g_strdup(address);
 	nameserver->port = port;
 	nameserver->flags = flags;
+	nameserver->resolv = resolv;
 
 	if (connect_udp_channel(nameserver) < 0) {
 		free_nameserver(nameserver);
 		return FALSE;
 	}
-
-	nameserver->resolv = resolv;
 
 	resolv->nameserver_list = g_list_append(resolv->nameserver_list,
 								nameserver);

@@ -153,6 +153,7 @@ struct _GSupplicantInterface {
 	unsigned int pairwise_capa;
 	unsigned int scan_capa;
 	unsigned int mode_capa;
+	unsigned int max_scan_ssids;
 	dbus_bool_t ready;
 	GSupplicantState state;
 	dbus_bool_t scanning;
@@ -197,6 +198,7 @@ struct _GSupplicantNetwork {
 	unsigned char ssid[32];
 	unsigned int ssid_len;
 	dbus_int16_t signal;
+	dbus_uint16_t frequency;
 	struct g_supplicant_bss *best_bss;
 	GSupplicantMode mode;
 	GSupplicantSecurity security;
@@ -623,7 +625,13 @@ static void interface_capability(const char *key, DBusMessageIter *iter,
 	else if (g_strcmp0(key, "Modes") == 0)
 		supplicant_dbus_array_foreach(iter,
 				interface_capability_mode, interface);
-	else
+	else if (g_strcmp0(key, "MaxScanSSID") == 0) {
+		dbus_int32_t max_scan_ssid;
+
+		dbus_message_iter_get_basic(iter, &max_scan_ssid);
+		interface->max_scan_ssids = max_scan_ssid;
+
+	} else
 		SUPPLICANT_DBG("key %s type %c",
 				key, dbus_message_iter_get_arg_type(iter));
 }
@@ -726,6 +734,15 @@ unsigned int g_supplicant_interface_get_mode(GSupplicantInterface *interface)
 	return interface->mode_capa;
 }
 
+unsigned int g_supplicant_interface_get_max_scan_ssids(
+				GSupplicantInterface *interface)
+{
+	if (interface == NULL)
+		return 0;
+
+	return interface->max_scan_ssids;
+}
+
 static void set_network_enabled(DBusMessageIter *iter, void *user_data)
 {
 	dbus_bool_t enable = *(dbus_bool_t *)user_data;
@@ -747,6 +764,14 @@ int g_supplicant_interface_enable_selected_network(GSupplicantInterface *interfa
 				SUPPLICANT_INTERFACE ".Network",
 				"Enabled", DBUS_TYPE_BOOLEAN_AS_STRING,
 				set_network_enabled, NULL, &enable);
+}
+
+dbus_bool_t g_supplicant_interface_get_ready(GSupplicantInterface *interface)
+{
+	if (interface == NULL)
+		return FALSE;
+
+	return interface->ready;
 }
 
 GSupplicantInterface *g_supplicant_network_get_interface(
@@ -816,6 +841,14 @@ dbus_int16_t g_supplicant_network_get_signal(GSupplicantNetwork *network)
 		return 0;
 
 	return network->signal;
+}
+
+dbus_uint16_t g_supplicant_network_get_frequency(GSupplicantNetwork *network)
+{
+	if (network == NULL)
+		return 0;
+
+	return network->frequency;
 }
 
 dbus_bool_t g_supplicant_network_get_wps(GSupplicantNetwork *network)
@@ -1042,6 +1075,7 @@ static void add_bss_to_network(struct g_supplicant_bss *bss)
 	network->ssid_len = bss->ssid_len;
 	memcpy(network->ssid, bss->ssid, bss->ssid_len);
 	network->signal = bss->signal;
+	network->frequency = bss->frequency;
 	network->best_bss = bss;
 
 	network->wps = FALSE;
@@ -1210,7 +1244,9 @@ static void bss_process_ies(DBusMessageIter *iter, void *user_data)
 	if (ie == NULL || ie_len < 2)
 		return;
 
-	for (ie_end = ie+ie_len; ie+ie[1]+1 <= ie_end; ie += ie[1]+2) {
+	for (ie_end = ie + ie_len; ie < ie_end && ie + ie[1] + 1 <= ie_end;
+							ie += ie[1] + 2) {
+
 		if (ie[0] != WMM_WPA1_WPS_INFO || ie[1] < WPS_INFO_MIN_LEN ||
 			memcmp(ie+2, WPS_OUI, sizeof(WPS_OUI)) != 0)
 			continue;
@@ -2176,6 +2212,13 @@ struct interface_connect_data {
 	void *user_data;
 };
 
+struct interface_scan_data {
+	GSupplicantInterface *interface;
+	GSupplicantInterfaceCallback callback;
+	GSupplicantScanParams *scan_params;
+	void *user_data;
+};
+
 static void interface_create_property(const char *key, DBusMessageIter *iter,
 							void *user_data)
 {
@@ -2431,9 +2474,11 @@ int g_supplicant_interface_remove(GSupplicantInterface *interface,
 static void interface_scan_result(const char *error,
 				DBusMessageIter *iter, void *user_data)
 {
-	struct interface_data *data = user_data;
+	struct interface_scan_data *data = user_data;
 
 	if (error != NULL) {
+		SUPPLICANT_DBG("error %s", error);
+
 		if (data->callback != NULL)
 			data->callback(-EIO, data->interface, data->user_data);
 	} else {
@@ -2441,27 +2486,137 @@ static void interface_scan_result(const char *error,
 		data->interface->scan_data = data->user_data;
 	}
 
+	if (data != NULL && data->scan_params != NULL)
+		g_free(data->scan_params);
+
 	dbus_free(data);
+}
+
+static void add_scan_frequency(DBusMessageIter *iter, unsigned int freq)
+{
+	DBusMessageIter data;
+	unsigned int width = 0; /* Not used by wpa_supplicant atm */
+
+	dbus_message_iter_open_container(iter, DBUS_TYPE_STRUCT, NULL, &data);
+
+	dbus_message_iter_append_basic(&data, DBUS_TYPE_UINT32, &freq);
+	dbus_message_iter_append_basic(&data, DBUS_TYPE_UINT32, &width);
+
+	dbus_message_iter_close_container(iter, &data);
+}
+
+static void add_scan_frequencies(DBusMessageIter *iter,
+						void *user_data)
+{
+	GSupplicantScanParams *scan_data = user_data;
+	unsigned int freq;
+	int i;
+
+	for (i = 0; i < G_SUPPLICANT_MAX_FAST_SCAN; i++) {
+		freq = scan_data->freqs[i];
+		if (!freq)
+			break;
+
+		add_scan_frequency(iter, freq);
+	}
+}
+
+static void append_ssid(DBusMessageIter *iter,
+			const void *ssid, unsigned int len)
+{
+	DBusMessageIter array;
+
+	dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY,
+	DBUS_TYPE_BYTE_AS_STRING, &array);
+
+	dbus_message_iter_append_fixed_array(&array, DBUS_TYPE_BYTE,
+								&ssid, len);
+	dbus_message_iter_close_container(iter, &array);
+}
+
+static void append_ssids(DBusMessageIter *iter, void *user_data)
+{
+	GSupplicantScanParams *scan_data = user_data;
+	int i;
+
+	for (i = 0; i < scan_data->num_ssids; i++)
+		append_ssid(iter, scan_data->ssids[i].ssid,
+					scan_data->ssids[i].ssid_len);
+}
+
+static void supplicant_add_scan_frequency(DBusMessageIter *dict,
+		supplicant_dbus_array_function function,
+					void *user_data)
+{
+	GSupplicantScanParams *scan_params = user_data;
+	DBusMessageIter entry, value, array;
+	const char *key = "Channels";
+
+	if (scan_params->freqs[0] != 0) {
+		dbus_message_iter_open_container(dict, DBUS_TYPE_DICT_ENTRY,
+						NULL, &entry);
+
+		dbus_message_iter_append_basic(&entry, DBUS_TYPE_STRING, &key);
+
+		dbus_message_iter_open_container(&entry, DBUS_TYPE_VARIANT,
+					DBUS_TYPE_ARRAY_AS_STRING
+					DBUS_STRUCT_BEGIN_CHAR_AS_STRING
+					DBUS_TYPE_UINT32_AS_STRING
+					DBUS_TYPE_UINT32_AS_STRING
+					DBUS_STRUCT_END_CHAR_AS_STRING,
+					&value);
+
+		dbus_message_iter_open_container(&value, DBUS_TYPE_ARRAY,
+					DBUS_STRUCT_BEGIN_CHAR_AS_STRING
+					DBUS_TYPE_UINT32_AS_STRING
+					DBUS_TYPE_UINT32_AS_STRING
+					DBUS_STRUCT_END_CHAR_AS_STRING,
+					&array);
+
+		if (function)
+			function(&array, user_data);
+
+		dbus_message_iter_close_container(&value, &array);
+		dbus_message_iter_close_container(&entry, &value);
+		dbus_message_iter_close_container(dict, &entry);
+	}
 }
 
 static void interface_scan_params(DBusMessageIter *iter, void *user_data)
 {
 	DBusMessageIter dict;
 	const char *type = "passive";
+	struct interface_scan_data *data = user_data;
 
 	supplicant_dbus_dict_open(iter, &dict);
 
-	supplicant_dbus_dict_append_basic(&dict, "Type",
-						DBUS_TYPE_STRING, &type);
+	if (data && data->scan_params) {
+		type = "active";
+
+		supplicant_dbus_dict_append_basic(&dict, "Type",
+					DBUS_TYPE_STRING, &type);
+
+		supplicant_dbus_dict_append_array(&dict, "SSIDs",
+						DBUS_TYPE_STRING,
+						append_ssids,
+						data->scan_params);
+
+		supplicant_add_scan_frequency(&dict, add_scan_frequencies,
+						data->scan_params);
+	} else
+		supplicant_dbus_dict_append_basic(&dict, "Type",
+					DBUS_TYPE_STRING, &type);
 
 	supplicant_dbus_dict_close(iter, &dict);
 }
 
 int g_supplicant_interface_scan(GSupplicantInterface *interface,
+				GSupplicantScanParams *scan_data,
 				GSupplicantInterfaceCallback callback,
 							void *user_data)
 {
-	struct interface_data *data;
+	struct interface_scan_data *data;
+	int ret;
 
 	if (interface == NULL)
 		return -EINVAL;
@@ -2494,10 +2649,16 @@ int g_supplicant_interface_scan(GSupplicantInterface *interface,
 	data->interface = interface;
 	data->callback = callback;
 	data->user_data = user_data;
+	data->scan_params = scan_data;
 
-	return supplicant_dbus_method_call(interface->path,
+	ret = supplicant_dbus_method_call(interface->path,
 			SUPPLICANT_INTERFACE ".Interface", "Scan",
 			interface_scan_params, interface_scan_result, data);
+
+	if (ret < 0)
+		dbus_free(data);
+
+	return ret;
 }
 
 static int parse_supplicant_error(DBusMessageIter *iter)

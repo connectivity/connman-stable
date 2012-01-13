@@ -1,7 +1,7 @@
 /*
  *  Connection Manager
  *
- *  Copyright (C) 2007-2010  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2007-2011  Intel Corporation. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -25,6 +25,8 @@
 #include <unistd.h>
 #include <sys/errno.h>
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
 #include <xtables.h>
 
 #include <linux/netfilter_ipv4/ip_tables.h>
@@ -44,6 +46,8 @@ static const char *hooknames[] = {
 #define LABEL_QUEUE   "QUEUE"
 #define LABEL_RETURN  "RETURN"
 
+#define XT_OPTION_OFFSET_SCALE 256
+
 /* fn returns 0 to continue iteration */
 #define _XT_ENTRY_ITERATE_CONTINUE(type, entries, size, n, fn, args...) \
 ({								\
@@ -53,7 +57,7 @@ static const char *hooknames[] = {
 	type *__entry;						\
 								\
 	for (__i = 0, __n = 0; __i < (size);			\
-	     __i += __entry->next_offset, __n++) { 		\
+	     __i += __entry->next_offset, __n++) {		\
 		__entry = (void *)(entries) + __i;		\
 		if (__n < n)					\
 			continue;				\
@@ -236,37 +240,15 @@ static GList *find_chain_tail(struct connman_iptables *table,
 				char *chain_name)
 {
 	GList *chain_head, *list;
-	struct connman_iptables_entry *head, *tail;
-	struct ipt_entry *entry;
-	struct xt_entry_target *target;
-	int builtin;
+	struct connman_iptables_entry *tail;
 
-	/* First we look for the head */
-	for (list = table->entries; list; list = list->next) {
-		head = list->data;
-		entry = head->entry;
-
-		/* Buit-in chain */
-		builtin = head->builtin;
-		if (builtin >= 0 && !strcmp(hooknames[builtin], chain_name))
-			break;
-
-		/* User defined chain */
-		target = ipt_get_target(entry);
-		if (!strcmp(target->u.user.name, IPT_ERROR_TARGET) &&
-		    !strcmp((char *)target->data, chain_name))
-			break;
-	}
-
-	if (list == NULL)
+	chain_head = find_chain_head(table, chain_name);
+	if (chain_head == NULL)
 		return NULL;
-
-	chain_head = list;
 
 	/* Then we look for the next chain */
 	for (list = chain_head->next; list; list = list->next) {
 		tail = list->data;
-		entry = tail->entry;
 
 		if (is_chain(table, tail))
 			return list;
@@ -298,13 +280,41 @@ static void update_offsets(struct connman_iptables *table)
 	}
 }
 
+static void update_targets_reference(struct connman_iptables *table,
+				struct connman_iptables_entry *entry_before,
+				struct connman_iptables_entry *modified_entry,
+				gboolean is_removing)
+{
+	struct connman_iptables_entry *tmp;
+	struct xt_standard_target *t;
+	GList *list;
+	int offset;
+
+	offset = modified_entry->entry->next_offset;
+
+	for (list = table->entries; list; list = list->next) {
+		tmp = list->data;
+
+		if (!is_jump(tmp))
+			continue;
+
+		t = (struct xt_standard_target *)ipt_get_target(tmp->entry);
+
+		if (is_removing == TRUE) {
+			if (t->verdict >= entry_before->offset)
+				t->verdict -= offset;
+		} else {
+			if (t->verdict > entry_before->offset)
+				t->verdict += offset;
+		}
+	}
+}
+
 static int connman_add_entry(struct connman_iptables *table,
 				struct ipt_entry *entry, GList *before,
 					int builtin)
 {
-	GList *list;
-	struct connman_iptables_entry *e, *tmp, *entry_before;
-	struct xt_standard_target *t;
+	struct connman_iptables_entry *e, *entry_before;
 
 	if (table == NULL)
 		return -1;
@@ -329,24 +339,30 @@ static int connman_add_entry(struct connman_iptables *table,
 	entry_before = before->data;
 
 	/*
-	 * We've just insterted a new entry. All references before it
+	 * We've just appended/insterted a new entry. All references
 	 * should be bumped accordingly.
 	 */
-	for (list = table->entries; list != before; list = list->next) {
-		tmp = list->data;
-
-		if (!is_jump(tmp))
-			continue;
-
-		t = (struct xt_standard_target *)ipt_get_target(tmp->entry);
-
-		if (t->verdict >= entry_before->offset)
-			t->verdict += entry->next_offset;
-	}
+	update_targets_reference(table, entry_before, e, FALSE);
 
 	update_offsets(table);
 
 	return 0;
+}
+
+static int remove_table_entry(struct connman_iptables *table,
+					struct connman_iptables_entry *entry)
+{
+	int removed = 0;
+
+	table->num_entries--;
+	table->size -= entry->entry->next_offset;
+	removed = entry->entry->next_offset;
+
+	g_free(entry->entry);
+
+	table->entries = g_list_remove(table->entries, entry);
+
+	return removed;
 }
 
 static int connman_iptables_flush_chain(struct connman_iptables *table,
@@ -379,11 +395,7 @@ static int connman_iptables_flush_chain(struct connman_iptables *table,
 		entry = list->data;
 		next = g_list_next(list);
 
-		table->num_entries--;
-		table->size -= entry->entry->next_offset;
-		removed += entry->entry->next_offset;
-
-		table->entries = g_list_remove(table->entries, list->data);
+		removed += remove_table_entry(table, entry);
 
 		list = next;
 	}
@@ -417,30 +429,31 @@ static int connman_iptables_flush_chain(struct connman_iptables *table,
 static int connman_iptables_delete_chain(struct connman_iptables *table,
 						char *name)
 {
-	GList *chain_head, *chain_tail, *list, *next;
+	GList *chain_head, *chain_tail;
 	struct connman_iptables_entry *entry;
 
 	chain_head = find_chain_head(table, name);
 	if (chain_head == NULL)
 		return -EINVAL;
 
+	entry = chain_head->data;
+
+	/* We cannot remove builtin chain */
+	if (entry->builtin >= 0)
+		return -EINVAL;
+
 	chain_tail = find_chain_tail(table, name);
 	if (chain_tail == NULL)
 		return -EINVAL;
 
-	list = chain_head;
+	/* Chain must be flushed */
+	if (chain_head->next != chain_tail->prev)
+		return -EINVAL;
 
-	while (list != chain_tail) {
-		entry = list->data;
-		next = g_list_next(list);
+	remove_table_entry(table, entry);
 
-		table->num_entries--;
-		table->size -= entry->entry->next_offset;
-
-		table->entries = g_list_remove(table->entries, list->data);
-
-		list = next;
-	}
+	entry = chain_tail->prev->data;
+	remove_table_entry(table, entry);
 
 	update_offsets(table);
 
@@ -518,19 +531,17 @@ err_head:
 	return -ENOMEM;
 }
 
-static struct ipt_entry *
-new_rule(struct connman_iptables *table,
-		char *target_name, struct xtables_target *xt_t,
-		char *match_name, struct xtables_match *xt_m)
+static struct ipt_entry *new_rule(struct ipt_ip *ip,
+			char *target_name, struct xtables_target *xt_t,
+			struct xtables_rule_match *xt_rm)
 {
+	struct xtables_rule_match *tmp_xt_rm;
 	struct ipt_entry *new_entry;
 	size_t match_size, target_size;
-	int is_builtin = is_builtin_target(target_name);
 
-	if (xt_m)
-		match_size = xt_m->m->u.match_size;
-	else
-		match_size = 0;
+	match_size = 0;
+	for (tmp_xt_rm = xt_rm; tmp_xt_rm != NULL; tmp_xt_rm = tmp_xt_rm->next)
+		match_size += tmp_xt_rm->match->m->u.match_size;
 
 	if (xt_t)
 		target_size = ALIGN(xt_t->t->u.target_size);
@@ -542,59 +553,32 @@ new_rule(struct connman_iptables *table,
 	if (new_entry == NULL)
 		return NULL;
 
+	memcpy(&new_entry->ip, ip, sizeof(struct ipt_ip));
+
 	new_entry->target_offset = sizeof(struct ipt_entry) + match_size;
 	new_entry->next_offset = sizeof(struct ipt_entry) + target_size +
 								match_size;
-	if (xt_m) {
-		struct xt_entry_match *entry_match;
 
-		entry_match = (struct xt_entry_match *)new_entry->elems;
-		memcpy(entry_match, xt_m->m, match_size);
+	match_size = 0;
+	for (tmp_xt_rm = xt_rm; tmp_xt_rm != NULL;
+				tmp_xt_rm = tmp_xt_rm->next) {
+		memcpy(new_entry->elems + match_size, tmp_xt_rm->match->m,
+					tmp_xt_rm->match->m->u.match_size);
+		match_size += tmp_xt_rm->match->m->u.match_size;
 	}
 
 	if (xt_t) {
 		struct xt_entry_target *entry_target;
 
-		if (is_builtin) {
-			struct xt_standard_target *target;
-
-			target = (struct xt_standard_target *)(xt_t->t);
-			strcpy(target->target.u.user.name, IPT_STANDARD_TARGET);
-			target->verdict = target_to_verdict(target_name);
-		}
-
 		entry_target = ipt_get_target(new_entry);
 		memcpy(entry_target, xt_t->t, target_size);
-	} else {
-		struct connman_iptables_entry *target_rule;
-		struct xt_standard_target *target;
-		GList *chain_head;
-
-		/*
-		 * This is a user defined target, i.e. a chain jump.
-		 * We search for the chain head, and the target verdict
-		 * is the first rule's offset on this chain.
-		 * The offset is from the beginning of the table.
-		 */
-
-		chain_head = find_chain_head(table, target_name);
-		if (chain_head == NULL || chain_head->next == NULL) {
-			g_free(new_entry);
-			return NULL;
-		}
-
-		target_rule = chain_head->next->data;
-
-		target = (struct xt_standard_target *)ipt_get_target(new_entry);
-		strcpy(target->target.u.user.name, IPT_STANDARD_TARGET);
-		target->target.u.user.target_size = target_size;
-		target->verdict = target_rule->offset;
 	}
 
 	return new_entry;
 }
 
-static void update_hooks(struct connman_iptables *table, GList *chain_head, struct ipt_entry *entry)
+static void update_hooks(struct connman_iptables *table, GList *chain_head,
+				struct ipt_entry *entry)
 {
 	GList *list;
 	struct connman_iptables_entry *head, *e;
@@ -623,29 +607,26 @@ static void update_hooks(struct connman_iptables *table, GList *chain_head, stru
 	}
 }
 
-static int
-connman_iptables_add_rule(struct connman_iptables *table, char *chain_name,
+static struct ipt_entry *prepare_rule_inclusion(struct connman_iptables *table,
+				struct ipt_ip *ip, char *chain_name,
 				char *target_name, struct xtables_target *xt_t,
-				char *match_name, struct xtables_match *xt_m)
+				int *builtin, struct xtables_rule_match *xt_rm)
 {
 	GList *chain_tail, *chain_head;
 	struct ipt_entry *new_entry;
 	struct connman_iptables_entry *head;
-	int builtin = -1;
 
 	chain_head = find_chain_head(table, chain_name);
 	if (chain_head == NULL)
-		return -EINVAL;
+		return NULL;
 
 	chain_tail = find_chain_tail(table, chain_name);
 	if (chain_tail == NULL)
-		return -EINVAL;
+		return NULL;
 
-	new_entry = new_rule(table,
-				target_name, xt_t,
-				match_name, xt_m);
+	new_entry = new_rule(ip, target_name, xt_t, xt_rm);
 	if (new_entry == NULL)
-		return -EINVAL;
+		return NULL;
 
 	update_hooks(table, chain_head, new_entry);
 
@@ -656,17 +637,267 @@ connman_iptables_add_rule(struct connman_iptables *table, char *chain_name,
 	 */
 	head = chain_head->data;
 	if (head->builtin < 0)
-		builtin = -1;
+		*builtin = -1;
 	else if (chain_head == chain_tail->prev) {
-		builtin = head->builtin;
+		*builtin = head->builtin;
 		head->builtin = -1;
 	}
 
-	return connman_add_entry(table, new_entry, chain_tail->prev, builtin);
+	return new_entry;
 }
 
-static struct ipt_replace *
-connman_iptables_blob(struct connman_iptables *table)
+static int connman_iptables_append_rule(struct connman_iptables *table,
+				struct ipt_ip *ip, char *chain_name,
+				char *target_name, struct xtables_target *xt_t,
+				struct xtables_rule_match *xt_rm)
+{
+	GList *chain_tail;
+	struct ipt_entry *new_entry;
+	int builtin = -1, ret;
+
+	chain_tail = find_chain_tail(table, chain_name);
+	if (chain_tail == NULL)
+		return -EINVAL;
+
+	new_entry = prepare_rule_inclusion(table, ip, chain_name,
+					target_name, xt_t, &builtin, xt_rm);
+	if (new_entry == NULL)
+		return -EINVAL;
+
+	ret = connman_add_entry(table, new_entry, chain_tail->prev, builtin);
+	if (ret < 0)
+		g_free(new_entry);
+
+	return ret;
+}
+
+static int connman_iptables_insert_rule(struct connman_iptables *table,
+				struct ipt_ip *ip, char *chain_name,
+				char *target_name, struct xtables_target *xt_t,
+				struct xtables_rule_match *xt_rm)
+{
+	GList *chain_head;
+	struct ipt_entry *new_entry;
+	int builtin = -1, ret;
+
+	chain_head = find_chain_head(table, chain_name);
+	if (chain_head == NULL)
+		return -EINVAL;
+
+	new_entry = prepare_rule_inclusion(table, ip, chain_name,
+					target_name, xt_t, &builtin, xt_rm);
+	if (new_entry == NULL)
+		return -EINVAL;
+
+	ret = connman_add_entry(table, new_entry, chain_head->next, builtin);
+	if (ret < 0)
+		g_free(new_entry);
+
+	return ret;
+}
+
+static gboolean is_same_ipt_entry(struct ipt_entry *i_e1,
+					struct ipt_entry *i_e2)
+{
+	if (memcmp(&i_e1->ip, &i_e2->ip, sizeof(struct ipt_ip)) != 0)
+		return FALSE;
+
+	if (i_e1->target_offset != i_e2->target_offset)
+		return FALSE;
+
+	if (i_e1->next_offset != i_e2->next_offset)
+		return FALSE;
+
+	return TRUE;
+}
+
+static gboolean is_same_target(struct xt_entry_target *xt_e_t1,
+					struct xt_entry_target *xt_e_t2)
+{
+	if (xt_e_t1 == NULL || xt_e_t2 == NULL)
+		return FALSE;
+
+	if (strcmp(xt_e_t1->u.user.name, IPT_STANDARD_TARGET) == 0) {
+		struct xt_standard_target *xt_s_t1;
+		struct xt_standard_target *xt_s_t2;
+
+		xt_s_t1 = (struct xt_standard_target *) xt_e_t1;
+		xt_s_t2 = (struct xt_standard_target *) xt_e_t2;
+
+		if (xt_s_t1->verdict != xt_s_t2->verdict)
+			return FALSE;
+	} else {
+		if (xt_e_t1->u.target_size != xt_e_t2->u.target_size)
+			return FALSE;
+
+		if (strcmp(xt_e_t1->u.user.name, xt_e_t2->u.user.name) != 0)
+			return FALSE;
+	}
+
+	return TRUE;
+}
+
+static gboolean is_same_match(struct xt_entry_match *xt_e_m1,
+				struct xt_entry_match *xt_e_m2)
+{
+	if (xt_e_m1 == NULL || xt_e_m2 == NULL)
+		return FALSE;
+
+	if (xt_e_m1->u.match_size != xt_e_m2->u.match_size)
+		return FALSE;
+
+	if (xt_e_m1->u.user.revision != xt_e_m2->u.user.revision)
+		return FALSE;
+
+	if (strcmp(xt_e_m1->u.user.name, xt_e_m2->u.user.name) != 0)
+		return FALSE;
+
+	return TRUE;
+}
+
+static int connman_iptables_delete_rule(struct connman_iptables *table,
+				struct ipt_ip *ip, char *chain_name,
+				char *target_name, struct xtables_target *xt_t,
+				struct xtables_match *xt_m,
+				struct xtables_rule_match *xt_rm)
+{
+	GList *chain_tail, *chain_head, *list;
+	struct xt_entry_target *xt_e_t = NULL;
+	struct xt_entry_match *xt_e_m = NULL;
+	struct connman_iptables_entry *entry;
+	struct ipt_entry *entry_test;
+	int builtin, removed;
+
+	removed = 0;
+
+	chain_head = find_chain_head(table, chain_name);
+	if (chain_head == NULL)
+		return -EINVAL;
+
+	chain_tail = find_chain_tail(table, chain_name);
+	if (chain_tail == NULL)
+		return -EINVAL;
+
+	if (!xt_t && !xt_m)
+		return -EINVAL;
+
+	entry_test = new_rule(ip, target_name, xt_t, xt_rm);
+	if (entry_test == NULL)
+		return -EINVAL;
+
+	if (xt_t != NULL)
+		xt_e_t = ipt_get_target(entry_test);
+	if (xt_m != NULL)
+		xt_e_m = (struct xt_entry_match *)entry_test->elems;
+
+	entry = chain_head->data;
+	builtin = entry->builtin;
+
+	if (builtin >= 0)
+		list = chain_head;
+	else
+		list = chain_head->next;
+
+	for (entry = NULL; list != chain_tail->prev; list = list->next) {
+		struct connman_iptables_entry *tmp;
+		struct ipt_entry *tmp_e;
+
+		tmp = list->data;
+		tmp_e = tmp->entry;
+
+		if (is_same_ipt_entry(entry_test, tmp_e) == FALSE)
+			continue;
+
+		if (xt_t != NULL) {
+			struct xt_entry_target *tmp_xt_e_t;
+
+			tmp_xt_e_t = ipt_get_target(tmp_e);
+
+			if (!is_same_target(tmp_xt_e_t, xt_e_t))
+				continue;
+		}
+
+		if (xt_m != NULL) {
+			struct xt_entry_match *tmp_xt_e_m;
+
+			tmp_xt_e_m = (struct xt_entry_match *)tmp_e->elems;
+
+			if (!is_same_match(tmp_xt_e_m, xt_e_m))
+				continue;
+		}
+
+		entry = tmp;
+		break;
+	}
+
+	if (entry == NULL) {
+		g_free(entry_test);
+		return -EINVAL;
+	}
+
+	/* We have deleted a rule,
+	 * all references should be bumped accordingly */
+	if (list->next != NULL)
+		update_targets_reference(table, list->next->data,
+						list->data, TRUE);
+
+	removed += remove_table_entry(table, entry);
+
+	if (builtin >= 0) {
+		list = list->next;
+		if (list) {
+			entry = list->data;
+			entry->builtin = builtin;
+		}
+
+		table->underflow[builtin] -= removed;
+		for (list = chain_tail; list; list = list->next) {
+			entry = list->data;
+
+			builtin = entry->builtin;
+			if (builtin < 0)
+				continue;
+
+			table->hook_entry[builtin] -= removed;
+			table->underflow[builtin] -= removed;
+		}
+	}
+
+	update_offsets(table);
+
+	return 0;
+}
+
+static int connman_iptables_change_policy(struct connman_iptables *table,
+						char *chain_name, char *policy)
+{
+	GList *chain_head;
+	struct connman_iptables_entry *entry;
+	struct xt_entry_target *target;
+	struct xt_standard_target *t;
+	int verdict;
+
+	verdict = target_to_verdict(policy);
+	if (verdict == 0)
+		return -EINVAL;
+
+	chain_head = find_chain_head(table, chain_name);
+	if (chain_head == NULL)
+		return -EINVAL;
+
+	entry = chain_head->data;
+	if (entry->builtin < 0)
+		return -EINVAL;
+
+	target = ipt_get_target(entry->entry);
+
+	t = (struct xt_standard_target *)target;
+	t->verdict = verdict;
+
+	return 0;
+}
+
+static struct ipt_replace *connman_iptables_blob(struct connman_iptables *table)
 {
 	struct ipt_replace *r;
 	GList *list;
@@ -936,8 +1167,22 @@ static int add_entry(struct ipt_entry *entry, struct connman_iptables *table)
 
 static struct connman_iptables *connman_iptables_init(const char *table_name)
 {
-	struct connman_iptables *table;
+	struct connman_iptables *table = NULL;
+	char *module = NULL;
 	socklen_t s;
+
+	if (xtables_insmod("ip_tables", NULL, TRUE) != 0)
+		goto err;
+
+	module = g_strconcat("iptable_", table_name, NULL);
+	if (module == NULL)
+		goto err;
+
+	if (xtables_insmod(module, NULL, TRUE) != 0)
+		goto err;
+
+	g_free(module);
+	module = NULL;
 
 	table =  g_try_new0(struct connman_iptables, 1);
 	if (table == NULL)
@@ -981,27 +1226,31 @@ static struct connman_iptables *connman_iptables_init(const char *table_name)
 			table->blob_entries->size,
 				add_entry, table);
 
-
 	return table;
 
 err:
+	g_free(module);
 
 	connman_iptables_cleanup(table);
 
 	return NULL;
 }
 
-
 static struct option connman_iptables_opts[] = {
 	{.name = "append",        .has_arg = 1, .val = 'A'},
+	{.name = "delete",        .has_arg = 1, .val = 'D'},
 	{.name = "flush-chain",   .has_arg = 1, .val = 'F'},
+	{.name = "insert",        .has_arg = 1, .val = 'I'},
 	{.name = "list",          .has_arg = 2, .val = 'L'},
 	{.name = "new-chain",     .has_arg = 1, .val = 'N'},
+	{.name = "policy",        .has_arg = 1, .val = 'P'},
 	{.name = "delete-chain",  .has_arg = 1, .val = 'X'},
+	{.name = "destination",   .has_arg = 1, .val = 'd'},
 	{.name = "in-interface",  .has_arg = 1, .val = 'i'},
 	{.name = "jump",          .has_arg = 1, .val = 'j'},
 	{.name = "match",         .has_arg = 1, .val = 'm'},
 	{.name = "out-interface", .has_arg = 1, .val = 'o'},
+	{.name = "source",        .has_arg = 1, .val = 's'},
 	{.name = "table",         .has_arg = 1, .val = 't'},
 	{NULL},
 };
@@ -1012,37 +1261,212 @@ struct xtables_globals connman_iptables_globals = {
 	.orig_opts = connman_iptables_opts,
 };
 
+static struct xtables_target *prepare_target(struct connman_iptables *table,
+							char *target_name)
+{
+	struct xtables_target *xt_t = NULL;
+	gboolean is_builtin, is_user_defined;
+	GList *chain_head = NULL;
+	size_t target_size;
+
+	is_builtin = FALSE;
+	is_user_defined = FALSE;
+
+	if (is_builtin_target(target_name))
+		is_builtin = TRUE;
+	else {
+		chain_head = find_chain_head(table, target_name);
+		if (chain_head != NULL && chain_head->next != NULL)
+			is_user_defined = TRUE;
+	}
+
+	if (is_builtin || is_user_defined)
+		xt_t = xtables_find_target(IPT_STANDARD_TARGET,
+						XTF_LOAD_MUST_SUCCEED);
+	else
+		xt_t = xtables_find_target(target_name, XTF_TRY_LOAD);
+
+	if (xt_t == NULL)
+		return NULL;
+
+	target_size = ALIGN(sizeof(struct ipt_entry_target)) + xt_t->size;
+
+	xt_t->t = g_try_malloc0(target_size);
+	if (xt_t->t == NULL)
+		return NULL;
+
+	xt_t->t->u.target_size = target_size;
+
+	if (is_builtin || is_user_defined) {
+		struct xt_standard_target *target;
+
+		target = (struct xt_standard_target *)(xt_t->t);
+		strcpy(target->target.u.user.name, IPT_STANDARD_TARGET);
+
+		if (is_builtin == TRUE)
+			target->verdict = target_to_verdict(target_name);
+		else if (is_user_defined == TRUE) {
+			struct connman_iptables_entry *target_rule;
+
+			if (chain_head == NULL) {
+				g_free(xt_t->t);
+				return NULL;
+			}
+
+			target_rule = chain_head->next->data;
+			target->verdict = target_rule->offset;
+		}
+	} else {
+		strcpy(xt_t->t->u.user.name, target_name);
+		xt_t->t->u.user.revision = xt_t->revision;
+		if (xt_t->init != NULL)
+			xt_t->init(xt_t->t);
+	}
+
+#if XTABLES_VERSION_CODE > 5
+	if (xt_t->x6_options != NULL)
+		connman_iptables_globals.opts =
+			xtables_options_xfrm(
+				connman_iptables_globals.orig_opts,
+
+				connman_iptables_globals.opts,
+				xt_t->x6_options,
+				&xt_t->option_offset);
+	else
+#endif
+		connman_iptables_globals.opts =
+			xtables_merge_options(
+#if XTABLES_VERSION_CODE > 5
+				connman_iptables_globals.orig_opts,
+#endif
+				connman_iptables_globals.opts,
+				xt_t->extra_opts,
+				&xt_t->option_offset);
+
+	if (connman_iptables_globals.opts == NULL) {
+		g_free(xt_t->t);
+		xt_t = NULL;
+	}
+
+	return xt_t;
+}
+
+static struct xtables_match *prepare_matches(struct connman_iptables *table,
+			struct xtables_rule_match **xt_rm, char *match_name)
+{
+	struct xtables_match *xt_m;
+	size_t match_size;
+
+	if (match_name == NULL)
+		return NULL;
+
+	xt_m = xtables_find_match(match_name, XTF_LOAD_MUST_SUCCEED, xt_rm);
+	match_size = ALIGN(sizeof(struct ipt_entry_match)) + xt_m->size;
+
+	xt_m->m = g_try_malloc0(match_size);
+	if (xt_m->m == NULL)
+		return NULL;
+
+	xt_m->m->u.match_size = match_size;
+	strcpy(xt_m->m->u.user.name, xt_m->name);
+	xt_m->m->u.user.revision = xt_m->revision;
+
+	if (xt_m->init != NULL)
+		xt_m->init(xt_m->m);
+
+	if (xt_m == xt_m->next)
+		goto done;
+
+#if XTABLES_VERSION_CODE > 5
+	if (xt_m->x6_options != NULL)
+		connman_iptables_globals.opts =
+			xtables_options_xfrm(
+				connman_iptables_globals.orig_opts,
+				connman_iptables_globals.opts,
+				xt_m->x6_options,
+				&xt_m->option_offset);
+	else
+#endif
+		connman_iptables_globals.opts =
+			xtables_merge_options(
+#if XTABLES_VERSION_CODE > 5
+				connman_iptables_globals.orig_opts,
+#endif
+				connman_iptables_globals.opts,
+				xt_m->extra_opts,
+				&xt_m->option_offset);
+
+	if (connman_iptables_globals.opts == NULL) {
+		g_free(xt_m->m);
+		xt_m = NULL;
+	}
+
+done:
+	return xt_m;
+}
+
 int main(int argc, char *argv[])
 {
 	struct connman_iptables *table;
-	struct xtables_match *xt_m;
+	struct xtables_rule_match *xt_rm, *tmp_xt_rm;
+	struct xtables_match *xt_m, *xt_m_t;
 	struct xtables_target *xt_t;
+	struct ipt_ip ip;
 	char *table_name, *chain, *new_chain, *match_name, *target_name;
-	char *delete_chain, *flush_chain;
-	int c;
-	size_t size;
-	gboolean dump, invert, delete;
+	char *delete_chain, *flush_chain, *policy;
+	int c, in_len, out_len;
+	gboolean dump, invert, delete, insert, delete_rule;
+	struct in_addr src, dst;
 
 	xtables_init_all(&connman_iptables_globals, NFPROTO_IPV4);
 
 	dump = FALSE;
 	invert = FALSE;
 	delete = FALSE;
+	insert = FALSE;
+	delete_rule = FALSE;
 	table_name = chain = new_chain = match_name = target_name = NULL;
-	delete_chain = flush_chain = NULL;
+	delete_chain = flush_chain = policy = NULL;
+	memset(&ip, 0, sizeof(struct ipt_ip));
 	table = NULL;
+	xt_rm = NULL;
 	xt_m = NULL;
 	xt_t = NULL;
 
-	while ((c = getopt_long(argc, argv,
-	   "-A:F:L::N:X:j:i:m:o:t:", connman_iptables_globals.opts, NULL)) != -1) {
+	/* extension's options will generate false-positives errors */
+	opterr = 0;
+
+	while ((c = getopt_long(argc, argv, "-A:D:F:I:L::N:P:X:d:i:j:m:o:s:t:",
+				connman_iptables_globals.opts, NULL)) != -1) {
 		switch (c) {
 		case 'A':
+			/* It is either -A, -D or -I at once */
+			if (chain)
+				goto out;
+
 			chain = optarg;
+			break;
+
+		case 'D':
+			/* It is either -A, -D or -I at once */
+			if (chain)
+				goto out;
+
+			chain = optarg;
+			delete_rule = TRUE;
 			break;
 
 		case 'F':
 			flush_chain = optarg;
+			break;
+
+		case 'I':
+			/* It is either -A, -D or -I at once */
+			if (chain)
+				goto out;
+
+			chain = optarg;
+			insert = TRUE;
 			break;
 
 		case 'L':
@@ -1053,77 +1477,95 @@ int main(int argc, char *argv[])
 			new_chain = optarg;
 			break;
 
+		case 'P':
+			chain = optarg;
+			if (optind < argc)
+				policy = argv[optind++];
+			else
+				goto out;
+
+			break;
+
 		case 'X':
 			delete = true;
 			delete_chain = optarg;
 			break;
 
-		case 'j':
-			target_name = optarg;
-			xt_t = xtables_find_target(target_name, XTF_TRY_LOAD);
-
-			if (xt_t == NULL)
+		case 'd':
+			if (!inet_pton(AF_INET, optarg, &dst))
 				break;
 
-			size = ALIGN(sizeof(struct ipt_entry_target)) + xt_t->size;
+			ip.dst = dst;
+			inet_pton(AF_INET, "255.255.255.255", &ip.dmsk);
 
-			xt_t->t = g_try_malloc0(size);
-			if (xt_t->t == NULL)
-				goto out;
-			xt_t->t->u.target_size = size;
-			strcpy(xt_t->t->u.user.name, target_name);
-			xt_t->t->u.user.revision = xt_t->revision;
-			if (xt_t->init != NULL)
-				xt_t->init(xt_t->t);
-			connman_iptables_globals.opts =
-				xtables_merge_options(
-#if XTABLES_VERSION_CODE > 5
-						     connman_iptables_globals.orig_opts,
-#endif
-						     connman_iptables_globals.opts,
-						     xt_t->extra_opts,
-						     &xt_t->option_offset);
-			if (connman_iptables_globals.opts == NULL)
-				goto out;
+			if (invert)
+				ip.invflags |= IPT_INV_DSTIP;
 
 			break;
 
 		case 'i':
+			in_len = strlen(optarg);
+
+			if (in_len + 1 > IFNAMSIZ)
+				break;
+
+			strcpy(ip.iniface, optarg);
+			memset(ip.iniface_mask, 0xff, in_len + 1);
+
+			if (invert)
+				ip.invflags |= IPT_INV_VIA_IN;
+
+			break;
+
+		case 'j':
+			target_name = optarg;
+			xt_t = prepare_target(table, target_name);
+			if (xt_t == NULL)
+				goto out;
+
 			break;
 
 		case 'm':
 			match_name = optarg;
-
-			xt_m = xtables_find_match(optarg, XTF_LOAD_MUST_SUCCEED, NULL);
-			size = ALIGN(sizeof(struct ipt_entry_match)) + xt_m->size;
-			xt_m->m = g_try_malloc0(size);
+			xt_m = prepare_matches(table, &xt_rm, match_name);
 			if (xt_m == NULL)
 				goto out;
-			xt_m->m->u.match_size = size;
-			strcpy(xt_m->m->u.user.name, xt_m->name);
-			xt_m->m->u.user.revision = xt_m->revision;
-			if (xt_m->init != NULL)
-				xt_m->init(xt_m->m);
-			if (xt_m != xt_m->next) {
-				connman_iptables_globals.opts =
-					xtables_merge_options(
-#if XTABLES_VERSION_CODE > 5
-						connman_iptables_globals.orig_opts,
-#endif
-						connman_iptables_globals.opts,
-						xt_m->extra_opts,
-						&xt_m->option_offset);
-				if (connman_iptables_globals.opts == NULL)
-					goto out;
-			}
 
 			break;
 
 		case 'o':
+			out_len = strlen(optarg);
+
+			if (out_len + 1 > IFNAMSIZ)
+				break;
+
+			strcpy(ip.outiface, optarg);
+			memset(ip.outiface_mask, 0xff, out_len + 1);
+
+			if (invert)
+				ip.invflags |= IPT_INV_VIA_OUT;
+
+			break;
+
+		case 's':
+			if (!inet_pton(AF_INET, optarg, &src))
+				break;
+
+			ip.src = src;
+			inet_pton(AF_INET, "255.255.255.255", &ip.smsk);
+
+			if (invert)
+				ip.invflags |= IPT_INV_SRCIP;
+
 			break;
 
 		case 't':
 			table_name = optarg;
+
+			table = connman_iptables_init(table_name);
+			if (table == NULL)
+				return -1;
+
 			break;
 
 		case 1:
@@ -1141,26 +1583,88 @@ int main(int argc, char *argv[])
 			return -1;
 
 		default:
-			if (xt_t == NULL || xt_t->parse == NULL ||
-			    !xt_t->parse(c - xt_t->option_offset, argv, invert,
-					&xt_t->tflags, NULL, &xt_t->t)) {
-				if (xt_m == NULL || xt_m->parse == NULL)
-					break;
+#if XTABLES_VERSION_CODE > 5
+			if (xt_t != NULL && (xt_t->x6_parse != NULL ||
+						xt_t->parse != NULL) &&
+					(c >= (int) xt_t->option_offset &&
+					c < (int) xt_t->option_offset +
+					XT_OPTION_OFFSET_SCALE)) {
+				xtables_option_tpcall(c, argv,
+							invert,	xt_t, NULL);
 
-				xt_m->parse(c - xt_m->option_offset, argv,
-					invert, &xt_m->mflags, NULL, &xt_m->m);
+				break;
 			}
 
+			for (tmp_xt_rm = xt_rm; tmp_xt_rm != NULL;
+						tmp_xt_rm = tmp_xt_rm->next) {
+				xt_m_t = tmp_xt_rm->match;
+
+				if (tmp_xt_rm->completed ||
+						(xt_m_t->x6_parse == NULL &&
+						 xt_m_t->parse == NULL))
+					continue;
+
+				if (c < (int) xt_m_t->option_offset ||
+					c >= (int) xt_m_t->option_offset
+					+ XT_OPTION_OFFSET_SCALE)
+					continue;
+
+				xtables_option_mpcall(c, argv,
+							invert, xt_m_t, NULL);
+
+				break;
+			}
+#else
+			if (xt_t == NULL || xt_t->parse == NULL ||
+				!xt_t->parse(c - xt_t->option_offset,
+				argv, invert, &xt_t->tflags, NULL, &xt_t->t)) {
+
+				for (tmp_xt_rm = xt_rm; tmp_xt_rm != NULL;
+						tmp_xt_rm = tmp_xt_rm->next) {
+					xt_m_t = tmp_xt_rm->match;
+
+					if (tmp_xt_rm->completed ||
+							xt_m_t->parse == NULL)
+						continue;
+
+					if (xt_m->parse(c - xt_m->option_offset,
+						argv, invert, &xt_m->mflags,
+						NULL, &xt_m->m))
+						break;
+				}
+			}
+#endif
 			break;
 		}
+
+		invert = FALSE;
 	}
 
-	if (table_name == NULL)
+#if XTABLES_VERSION_CODE > 5
+	for (tmp_xt_rm = xt_rm; tmp_xt_rm != NULL;
+				tmp_xt_rm = tmp_xt_rm->next)
+		xtables_option_mfcall(tmp_xt_rm->match);
+
+	if (xt_t != NULL)
+		xtables_option_tfcall(xt_t);
+#else
+	for (tmp_xt_rm = xt_rm; tmp_xt_rm != NULL;
+				tmp_xt_rm = tmp_xt_rm->next)
+		if (tmp_xt_rm->match->final_check != NULL)
+			tmp_xt_rm->match->final_check(
+					tmp_xt_rm->match->mflags);
+
+	if (xt_t != NULL && xt_t->final_check != NULL)
+		xt_t->final_check(xt_t->tflags);
+#endif
+
+	if (table == NULL) {
 		table_name = "filter";
 
-	table = connman_iptables_init(table_name);
-	if (table == NULL)
-		return -1;
+		table = connman_iptables_init(table_name);
+		if (table == NULL)
+			return -1;
+	}
 
 	if (delete) {
 		if (delete_chain == NULL)
@@ -1199,15 +1703,37 @@ int main(int argc, char *argv[])
 	}
 
 	if (chain) {
-		if (target_name == NULL)
-			return -1;
+		if (policy != NULL) {
+			printf("Changing policy of %s to %s\n", chain, policy);
 
-		printf("Adding %s to %s (match %s)\n", target_name, chain, match_name);
+			connman_iptables_change_policy(table, chain, policy);
 
-		connman_iptables_add_rule(table, chain, target_name, xt_t,
-					match_name, xt_m);
+			goto commit;
+		}
 
-		goto commit;
+		if (delete_rule == TRUE) {
+			printf("Deleting %s to %s (match %s)\n", target_name,
+					chain, match_name);
+
+			connman_iptables_delete_rule(table, &ip, chain,
+					target_name, xt_t, xt_m, xt_rm);
+
+			goto commit;
+		}
+
+		if (insert == TRUE) {
+			printf("Inserting %s to %s (match %s)\n", target_name,
+					chain, match_name);
+
+			connman_iptables_insert_rule(table, &ip, chain,
+						target_name, xt_t, xt_rm);
+		} else {
+			printf("Appending %s to %s (match %s)\n", target_name,
+					chain, match_name);
+
+			connman_iptables_append_rule(table, &ip, chain,
+						target_name, xt_t, xt_rm);
+		}
 	}
 
 commit:

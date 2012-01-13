@@ -42,6 +42,7 @@ enum rfkill_type {
 	RFKILL_TYPE_WWAN,
 	RFKILL_TYPE_GPS,
 	RFKILL_TYPE_FM,
+	NUM_RFKILL_TYPES,
 };
 
 enum rfkill_operation {
@@ -75,6 +76,30 @@ static enum connman_service_type convert_type(uint8_t type)
 	return CONNMAN_SERVICE_TYPE_UNKNOWN;
 }
 
+static enum rfkill_type convert_service_type(enum connman_service_type type)
+{
+	switch (type) {
+	case CONNMAN_SERVICE_TYPE_WIFI:
+		return RFKILL_TYPE_WLAN;
+	case CONNMAN_SERVICE_TYPE_BLUETOOTH:
+		return RFKILL_TYPE_BLUETOOTH;
+	case CONNMAN_SERVICE_TYPE_WIMAX:
+		return RFKILL_TYPE_WIMAX;
+	case CONNMAN_SERVICE_TYPE_CELLULAR:
+		return RFKILL_TYPE_WWAN;
+	case CONNMAN_SERVICE_TYPE_GPS:
+		return RFKILL_TYPE_GPS;
+	case CONNMAN_SERVICE_TYPE_SYSTEM:
+	case CONNMAN_SERVICE_TYPE_ETHERNET:
+	case CONNMAN_SERVICE_TYPE_VPN:
+	case CONNMAN_SERVICE_TYPE_GADGET:
+	case CONNMAN_SERVICE_TYPE_UNKNOWN:
+		return NUM_RFKILL_TYPES;
+	}
+
+	return NUM_RFKILL_TYPES;
+}
+
 static GIOStatus rfkill_process(GIOChannel *chan)
 {
 	unsigned char buf[32];
@@ -100,18 +125,19 @@ static GIOStatus rfkill_process(GIOChannel *chan)
 						event->type, event->op,
 						event->soft, event->hard);
 
+	type = convert_type(event->type);
+
 	switch (event->op) {
 	case RFKILL_OP_ADD:
-		type = convert_type(event->type);
 		__connman_technology_add_rfkill(event->idx, type,
 						event->soft, event->hard);
 		break;
 	case RFKILL_OP_DEL:
-		__connman_technology_remove_rfkill(event->idx);
+		__connman_technology_remove_rfkill(event->idx, type);
 		break;
 	case RFKILL_OP_CHANGE:
-		__connman_technology_update_rfkill(event->idx, event->soft,
-								event->hard);
+		__connman_technology_update_rfkill(event->idx, type,
+						event->soft, event->hard);
 		break;
 	default:
 		break;
@@ -133,6 +159,37 @@ static gboolean rfkill_event(GIOChannel *chan,
 }
 
 static GIOChannel *channel = NULL;
+
+int __connman_rfkill_block(enum connman_service_type type, connman_bool_t block)
+{
+	uint8_t rfkill_type;
+	struct rfkill_event event;
+	ssize_t len;
+	int fd;
+
+	DBG("type %d block %d", type, block);
+
+	rfkill_type = convert_service_type(type);
+	if (rfkill_type == NUM_RFKILL_TYPES)
+		return -EINVAL;
+
+	fd = open("/dev/rfkill", O_RDWR | O_CLOEXEC);
+	if (fd < 0)
+		return fd;
+
+	memset(&event, 0, sizeof(event));
+	event.op = RFKILL_OP_CHANGE_ALL;
+	event.type = rfkill_type;
+	event.soft = block;
+
+	len = write(fd, &event, sizeof(event));
+	if (len < 0)
+		connman_error("Failed to change RFKILL state");
+
+	close(fd);
+
+	return 0;
+}
 
 int __connman_rfkill_init(void)
 {

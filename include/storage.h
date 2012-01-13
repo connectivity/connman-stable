@@ -2,7 +2,7 @@
  *
  *  Connection Manager
  *
- *  Copyright (C) 2007-2010  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2011  Intel Corporation. All rights reserved.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2 as
@@ -22,40 +22,14 @@
 #ifndef __CONNMAN_STORAGE_H
 #define __CONNMAN_STORAGE_H
 
-#include <connman/profile.h>
-#include <connman/service.h>
-#include <connman/device.h>
+#include <glib.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * SECTION:storage
- * @title: Storage premitives
- * @short_description: Functions for registering storage modules
- */
-
-#define CONNMAN_STORAGE_PRIORITY_LOW      -100
-#define CONNMAN_STORAGE_PRIORITY_DEFAULT     0
-#define CONNMAN_STORAGE_PRIORITY_HIGH      100
-
-struct connman_storage {
-	const char *name;
-	int priority;
-	int (*profile_init) (void);
-	int (*profile_load) (struct connman_profile *profile);
-	int (*profile_save) (struct connman_profile *profile);
-	enum connman_service_type service_type;
-	int (*service_load) (struct connman_service *service);
-	int (*service_save) (struct connman_service *service);
-	enum connman_device_type device_type;
-	int (*device_load) (struct connman_device *device);
-	int (*device_save) (struct connman_device *device);
-};
-
-int connman_storage_register(struct connman_storage *storage);
-void connman_storage_unregister(struct connman_storage *storage);
+gchar **connman_storage_get_services();
+GKeyFile *connman_storage_load_service(const char *service_id);
 
 #ifdef __cplusplus
 }

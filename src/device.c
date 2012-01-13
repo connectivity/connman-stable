@@ -32,14 +32,18 @@ static GSList *device_list = NULL;
 static gchar **device_filter = NULL;
 static gchar **nodevice_filter = NULL;
 
+enum connman_pending_type {
+	PENDING_NONE	= 0,
+	PENDING_ENABLE	= 1,
+	PENDING_DISABLE = 2,
+};
+
 struct connman_device {
-	gint refcount;
+	int refcount;
 	enum connman_device_type type;
-	connman_bool_t offlinemode;
-	connman_bool_t blocked;
+	enum connman_pending_type powered_pending;	/* Indicates a pending
+							enable/disable request */
 	connman_bool_t powered;
-	connman_bool_t powered_pending;
-	connman_bool_t powered_persistent;
 	connman_bool_t scanning;
 	connman_bool_t disconnected;
 	connman_bool_t reconnect;
@@ -55,6 +59,7 @@ struct connman_device {
 	int phyindex;
 	int index;
 	guint scan_timeout;
+	guint pending_timeout;
 
 	struct connman_device_driver *driver;
 	void *driver_data;
@@ -88,6 +93,14 @@ static void clear_scan_trigger(struct connman_device *device)
 	if (device->scan_timeout > 0) {
 		g_source_remove(device->scan_timeout);
 		device->scan_timeout = 0;
+	}
+}
+
+static void clear_pending_trigger(struct connman_device *device)
+{
+	if (device->pending_timeout > 0) {
+		g_source_remove(device->pending_timeout);
+		device->pending_timeout = 0;
 	}
 }
 
@@ -208,64 +221,87 @@ enum connman_service_type __connman_device_get_service_type(struct connman_devic
 	return CONNMAN_SERVICE_TYPE_UNKNOWN;
 }
 
+static gboolean device_pending_reset(gpointer user_data)
+{
+	struct connman_device *device = user_data;
+
+	DBG("device %p", device);
+
+	/* Power request timedout, reset power pending state. */
+	device->pending_timeout = 0;
+	device->powered_pending = PENDING_NONE;
+
+	return FALSE;
+}
+
 int __connman_device_enable(struct connman_device *device)
 {
 	int err;
-	enum connman_service_type type;
 
-	DBG("device %p %d", device, device->blocked);
+	DBG("device %p", device);
 
 	if (!device->driver || !device->driver->enable)
 		return -EOPNOTSUPP;
 
-	if (device->powered_pending == TRUE)
+	/* There is an ongoing power disable request. */
+	if (device->powered_pending == PENDING_DISABLE)
+		return -EBUSY;
+
+	if (device->powered_pending == PENDING_ENABLE)
 		return -EALREADY;
 
-	if (device->blocked == TRUE)
-		return -ENOLINK;
+	if (device->powered_pending == PENDING_NONE && device->powered == TRUE)
+		return -EALREADY;
 
-	connman_device_set_disconnected(device, FALSE);
-	device->scanning = FALSE;
+	device->powered_pending = PENDING_ENABLE;
 
 	err = device->driver->enable(device);
-	if (err < 0 && err != -EALREADY) {
-		if (err == -EINPROGRESS) {
-			device->powered_pending = TRUE;
-			device->offlinemode = FALSE;
-			if (__connman_profile_get_offlinemode() == TRUE)
-				__connman_profile_set_offlinemode(FALSE, FALSE);
-		}
-		return err;
+	/*
+	 * device gets enabled right away.
+	 * Invoke the callback
+	 */
+	if (err == 0) {
+		connman_device_set_powered(device, TRUE);
+		goto done;
 	}
 
-	device->powered_pending = TRUE;
-	device->powered = TRUE;
-	device->offlinemode = FALSE;
-	if (__connman_profile_get_offlinemode() == TRUE)
-		__connman_profile_set_offlinemode(FALSE, FALSE);
-
-	type = __connman_device_get_service_type(device);
-	__connman_technology_enable(type);
-
-	return 0;
+	if (err == -EALREADY) {
+		/* If device is already powered, but connman is not updated */
+		connman_device_set_powered(device, TRUE);
+		goto done;
+	}
+	/*
+	 * if err == -EINPROGRESS, then the DBus call to the respective daemon
+	 * was successful. We set a 4 sec timeout so if the daemon never
+	 * returns a reply, we would reset the pending request.
+	 */
+	if (err == -EINPROGRESS)
+		device->pending_timeout = g_timeout_add_seconds(4,
+					device_pending_reset, device);
+done:
+	return err;
 }
 
 int __connman_device_disable(struct connman_device *device)
 {
 	int err;
-	enum connman_service_type type;
 
 	DBG("device %p", device);
 
 	if (!device->driver || !device->driver->disable)
 		return -EOPNOTSUPP;
 
-	if (device->powered == FALSE)
-		return -ENOLINK;
+	/* Ongoing power enable request */
+	if (device->powered_pending == PENDING_ENABLE)
+		return -EBUSY;
 
-	if (device->powered_pending == FALSE)
+	if (device->powered_pending == PENDING_DISABLE)
 		return -EALREADY;
 
+	if (device->powered_pending == PENDING_NONE && device->powered == FALSE)
+		return -EALREADY;
+
+	device->powered_pending = PENDING_DISABLE;
 	device->reconnect = FALSE;
 
 	clear_scan_trigger(device);
@@ -274,44 +310,21 @@ int __connman_device_disable(struct connman_device *device)
 		connman_network_set_connected(device->network, FALSE);
 
 	err = device->driver->disable(device);
-	if (err < 0 && err != -EALREADY) {
-		if (err == -EINPROGRESS)
-			device->powered_pending = FALSE;
-		return err;
+	if (err == 0) {
+		connman_device_set_powered(device, FALSE);
+		goto done;
 	}
 
-	g_hash_table_remove_all(device->networks);
+	if (err == -EALREADY) {
+		connman_device_set_powered(device, FALSE);
+		goto done;
+	}
 
-	device->powered_pending = FALSE;
-	device->powered = FALSE;
-
-	type = __connman_device_get_service_type(device);
-	__connman_technology_disable(type);
-
-	return 0;
-}
-
-static int set_powered(struct connman_device *device, connman_bool_t powered)
-{
-	DBG("device %p powered %d", device, powered);
-
-	if (powered == TRUE)
-		return __connman_device_enable(device);
-	else
-		return __connman_device_disable(device);
-}
-
-static int setup_device(struct connman_device *device)
-{
-	DBG("device %p", device);
-
-	__connman_technology_add_device(device);
-
-	if (device->offlinemode == FALSE &&
-				device->powered_persistent == TRUE)
-		__connman_device_enable(device);
-
-	return 0;
+	if (err == -EINPROGRESS)
+		device->pending_timeout = g_timeout_add_seconds(4,
+					device_pending_reset, device);
+done:
+	return err;
 }
 
 static void probe_driver(struct connman_device_driver *driver)
@@ -334,7 +347,7 @@ static void probe_driver(struct connman_device_driver *driver)
 
 		device->driver = driver;
 
-		setup_device(device);
+		__connman_technology_add_device(device);
 	}
 }
 
@@ -433,6 +446,7 @@ static void device_destruct(struct connman_device *device)
 {
 	DBG("device %p name %s", device, device->name);
 
+	clear_pending_trigger(device);
 	clear_scan_trigger(device);
 
 	g_free(device->ident);
@@ -464,7 +478,6 @@ struct connman_device *connman_device_create(const char *node,
 						enum connman_device_type type)
 {
 	struct connman_device *device;
-	enum connman_service_type service_type;
 	connman_bool_t bg_scan;
 
 	DBG("node %s type %d", node, type);
@@ -482,12 +495,8 @@ struct connman_device *connman_device_create(const char *node,
 	device->type = type;
 	device->name = g_strdup(type2description(device->type));
 
-	device->powered_persistent = TRUE;
-
 	device->phyindex = -1;
 
-	service_type = __connman_device_get_service_type(device);
-	device->blocked = __connman_technology_get_blocked(service_type);
 	device->backoff_interval = SCAN_INITIAL_DELAY;
 
 	switch (type) {
@@ -527,7 +536,7 @@ struct connman_device *connman_device_ref(struct connman_device *device)
 {
 	DBG("%p", device);
 
-	g_atomic_int_inc(&device->refcount);
+	__sync_fetch_and_add(&device->refcount, 1);
 
 	return device;
 }
@@ -540,7 +549,7 @@ struct connman_device *connman_device_ref(struct connman_device *device)
  */
 void connman_device_unref(struct connman_device *device)
 {
-	if (g_atomic_int_dec_and_test(&device->refcount) == FALSE)
+	if (__sync_fetch_and_sub(&device->refcount, 1) != 1)
 		return;
 
 	if (device->driver) {
@@ -656,76 +665,43 @@ const char *connman_device_get_ident(struct connman_device *device)
 int connman_device_set_powered(struct connman_device *device,
 						connman_bool_t powered)
 {
-	int err;
 	enum connman_service_type type;
 
 	DBG("driver %p powered %d", device, powered);
 
-	if (device->powered == powered) {
-		device->powered_pending = powered;
+	if (device->powered == powered)
 		return -EALREADY;
-	}
 
-	if (powered == TRUE)
-		err = __connman_device_enable(device);
-	else
-		err = __connman_device_disable(device);
+	clear_pending_trigger(device);
 
-	if (err < 0 && err != -EINPROGRESS && err != -EALREADY)
-		return err;
+	device->powered_pending = PENDING_NONE;
 
 	device->powered = powered;
-	device->powered_pending = powered;
 
 	type = __connman_device_get_service_type(device);
 
 	if (device->powered == TRUE)
-		__connman_technology_enable(type);
+		__connman_technology_enabled(type);
 	else
-		__connman_technology_disable(type);
-
-	if (device->offlinemode == TRUE && powered == TRUE)
-		return connman_device_set_powered(device, FALSE);
+		__connman_technology_disabled(type);
 
 	if (powered == FALSE)
 		return 0;
 
+	connman_device_set_disconnected(device, FALSE);
+	device->scanning = FALSE;
+
 	reset_scan_trigger(device);
 
-	if (device->driver && device->driver->scan)
+	if (device->driver && device->driver->scan_fast)
+		device->driver->scan_fast(device);
+	else if (device->driver && device->driver->scan)
 		device->driver->scan(device);
 
 	return 0;
 }
 
-int __connman_device_set_blocked(struct connman_device *device,
-						connman_bool_t blocked)
-{
-	connman_bool_t powered;
-
-	DBG("device %p blocked %d", device, blocked);
-
-	device->blocked = blocked;
-
-	if (device->offlinemode == TRUE)
-		return 0;
-
-	connman_info("%s {rfkill} blocked %d", device->interface, blocked);
-
-	if (blocked == FALSE)
-		powered = device->powered_persistent;
-	else
-		powered = FALSE;
-
-	return set_powered(device, powered);
-}
-
-connman_bool_t __connman_device_get_blocked(struct connman_device *device)
-{
-	return device->blocked;
-}
-
-int __connman_device_scan(struct connman_device *device)
+static int device_scan(struct connman_device *device)
 {
 	if (!device->driver || !device->driver->scan)
 		return -EOPNOTSUPP;
@@ -736,40 +712,6 @@ int __connman_device_scan(struct connman_device *device)
 	reset_scan_trigger(device);
 
 	return device->driver->scan(device);
-}
-
-int __connman_device_enable_persistent(struct connman_device *device)
-{
-	int err;
-
-	DBG("device %p", device);
-
-	device->powered_persistent = TRUE;
-
-	__connman_storage_save_device(device);
-
-	err = __connman_device_enable(device);
-	if (err == 0 || err == -EINPROGRESS) {
-		device->offlinemode = FALSE;
-		if (__connman_profile_get_offlinemode() == TRUE) {
-			__connman_profile_set_offlinemode(FALSE, FALSE);
-
-			__connman_profile_save_default();
-		}
-	}
-
-	return err;
-}
-
-int __connman_device_disable_persistent(struct connman_device *device)
-{
-	DBG("device %p", device);
-
-	device->powered_persistent = FALSE;
-
-	__connman_storage_save_device(device);
-
-	return __connman_device_disable(device);
 }
 
 int __connman_device_disconnect(struct connman_device *device)
@@ -992,49 +934,6 @@ const char *connman_device_get_string(struct connman_device *device,
 	return NULL;
 }
 
-static void set_offlinemode(struct connman_device *device,
-				connman_bool_t offlinemode)
-{
-	connman_bool_t powered;
-
-	DBG("device %p name %s", device, device->name);
-
-	if (device == NULL)
-		return;
-
-	device->offlinemode = offlinemode;
-
-	if (device->blocked == TRUE)
-		return;
-
-	powered = (offlinemode == TRUE) ? FALSE : TRUE;
-
-	if (device->powered == powered)
-		return;
-
-	if (device->powered_persistent == FALSE)
-		powered = FALSE;
-
-	set_powered(device, powered);
-}
-
-int __connman_device_set_offlinemode(connman_bool_t offlinemode)
-{
-	GSList *list;
-
-	DBG("offlinmode %d", offlinemode);
-
-	for (list = device_list; list != NULL; list = list->next) {
-		struct connman_device *device = list->data;
-
-		set_offlinemode(device, offlinemode);
-	}
-
-	__connman_notifier_offlinemode(offlinemode);
-
-	return 0;
-}
-
 /**
  * connman_device_add_network:
  * @device: device structure
@@ -1152,7 +1051,13 @@ static gboolean match_driver(struct connman_device *device,
 	return FALSE;
 }
 
-static int device_probe(struct connman_device *device)
+/**
+ * connman_device_register:
+ * @device: device structure
+ *
+ * Register device with the system
+ */
+int connman_device_register(struct connman_device *device)
 {
 	GSList *list;
 
@@ -1178,32 +1083,7 @@ static int device_probe(struct connman_device *device)
 	if (device->driver == NULL)
 		return 0;
 
-	return setup_device(device);
-}
-
-static void device_remove(struct connman_device *device)
-{
-	DBG("device %p name %s", device, device->name);
-
-	if (device->driver == NULL)
-		return;
-
-	remove_device(device);
-}
-
-/**
- * connman_device_register:
- * @device: device structure
- *
- * Register device with the system
- */
-int connman_device_register(struct connman_device *device)
-{
-	__connman_storage_load_device(device);
-
-	device->offlinemode = __connman_profile_get_offlinemode();
-
-	return device_probe(device);
+	return __connman_technology_add_device(device);
 }
 
 /**
@@ -1214,9 +1094,12 @@ int connman_device_register(struct connman_device *device)
  */
 void connman_device_unregister(struct connman_device *device)
 {
-	__connman_storage_save_device(device);
+	DBG("device %p name %s", device, device->name);
 
-	device_remove(device);
+	if (device->driver == NULL)
+		return;
+
+	remove_device(device);
 }
 
 /**
@@ -1291,7 +1174,7 @@ int __connman_device_request_scan(enum connman_service_type type)
 			continue;
 		}
 
-		err = __connman_device_scan(device);
+		err = device_scan(device);
 		if (err < 0 && err != -EINPROGRESS) {
 			DBG("err %d", err);
 			/* XXX maybe only a continue? */
@@ -1300,63 +1183,6 @@ int __connman_device_request_scan(enum connman_service_type type)
 	}
 
 	return 0;
-}
-
-static int set_technology(enum connman_service_type type, connman_bool_t enable)
-{
-	GSList *list;
-	int err;
-
-	DBG("type %d enable %d", type, enable);
-
-	switch (type) {
-	case CONNMAN_SERVICE_TYPE_UNKNOWN:
-	case CONNMAN_SERVICE_TYPE_SYSTEM:
-	case CONNMAN_SERVICE_TYPE_GPS:
-	case CONNMAN_SERVICE_TYPE_VPN:
-	case CONNMAN_SERVICE_TYPE_GADGET:
-		return 0;
-	case CONNMAN_SERVICE_TYPE_ETHERNET:
-	case CONNMAN_SERVICE_TYPE_WIFI:
-	case CONNMAN_SERVICE_TYPE_WIMAX:
-	case CONNMAN_SERVICE_TYPE_BLUETOOTH:
-	case CONNMAN_SERVICE_TYPE_CELLULAR:
-		break;
-	}
-
-	for (list = device_list; list != NULL; list = list->next) {
-		struct connman_device *device = list->data;
-		enum connman_service_type service_type =
-			__connman_device_get_service_type(device);
-
-		if (service_type != CONNMAN_SERVICE_TYPE_UNKNOWN &&
-				service_type != type) {
-			continue;
-		}
-
-		if (enable == TRUE)
-			err = __connman_device_enable_persistent(device);
-		else
-			err = __connman_device_disable_persistent(device);
-
-		if (err < 0 && err != -EINPROGRESS) {
-			DBG("err %d", err);
-			/* XXX maybe only a continue? */
-			return err;
-		}
-	}
-
-	return 0;
-}
-
-int __connman_device_enable_technology(enum connman_service_type type)
-{
-	return set_technology(type, TRUE);
-}
-
-int __connman_device_disable_technology(enum connman_service_type type)
-{
-	return set_technology(type, FALSE);
 }
 
 connman_bool_t __connman_device_isfiltered(const char *devname)
@@ -1392,72 +1218,6 @@ nodevice:
 	return FALSE;
 }
 
-static int device_load(struct connman_device *device)
-{
-	const char *ident = __connman_profile_active_ident();
-	GKeyFile *keyfile;
-	GError *error = NULL;
-	gchar *identifier;
-	connman_bool_t powered;
-
-	DBG("device %p", device);
-
-	keyfile = __connman_storage_open_profile(ident);
-	if (keyfile == NULL)
-		return 0;
-
-	identifier = g_strdup_printf("device_%s", device->name);
-	if (identifier == NULL)
-		goto done;
-
-	powered = g_key_file_get_boolean(keyfile, identifier,
-						"Powered", &error);
-	if (error == NULL)
-		device->powered_persistent = powered;
-	g_clear_error(&error);
-
-done:
-	g_free(identifier);
-
-	__connman_storage_close_profile(ident, keyfile, FALSE);
-
-	return 0;
-}
-
-static int device_save(struct connman_device *device)
-{
-	const char *ident = __connman_profile_active_ident();
-	GKeyFile *keyfile;
-	gchar *identifier;
-
-	DBG("device %p", device);
-
-	keyfile = __connman_storage_open_profile(ident);
-	if (keyfile == NULL)
-		return 0;
-
-	identifier = g_strdup_printf("device_%s", device->name);
-	if (identifier == NULL)
-		goto done;
-
-	g_key_file_set_boolean(keyfile, identifier,
-					"Powered", device->powered_persistent);
-
-done:
-	g_free(identifier);
-
-	__connman_storage_close_profile(ident, keyfile, TRUE);
-
-	return 0;
-}
-
-static struct connman_storage device_storage = {
-	.name		= "device",
-	.priority	= CONNMAN_STORAGE_PRIORITY_LOW,
-	.device_load	= device_load,
-	.device_save	= device_save,
-};
-
 int __connman_device_init(const char *device, const char *nodevice)
 {
 	DBG("");
@@ -1468,7 +1228,7 @@ int __connman_device_init(const char *device, const char *nodevice)
 	if (nodevice != NULL)
 		nodevice_filter = g_strsplit(nodevice, ",", -1);
 
-	return connman_storage_register(&device_storage);
+	return 0;
 }
 
 void __connman_device_cleanup(void)
@@ -1477,6 +1237,4 @@ void __connman_device_cleanup(void)
 
 	g_strfreev(nodevice_filter);
 	g_strfreev(device_filter);
-
-	connman_storage_unregister(&device_storage);
 }

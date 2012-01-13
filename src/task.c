@@ -51,7 +51,7 @@ struct connman_task {
 
 static GHashTable *task_hash = NULL;
 
-static volatile gint task_counter;
+static volatile int task_counter;
 
 static DBusConnection *connection;
 
@@ -105,7 +105,7 @@ struct connman_task *connman_task_create(const char *program)
 	if (task == NULL)
 		return NULL;
 
-	counter = g_atomic_int_exchange_and_add(&task_counter, 1);
+	counter = __sync_fetch_and_add(&task_counter, 1);
 
 	task->path = g_strdup_printf("/task/%d", counter);
 	task->pid = -1;
@@ -350,6 +350,44 @@ int connman_task_run(struct connman_task *task,
 	return 0;
 }
 
+static gboolean force_kill_timeout(gpointer user_data)
+{
+	pid_t pid = GPOINTER_TO_INT(user_data);
+	if (pid > 0) {
+		if (kill(pid, SIGKILL) == 0)
+			connman_warn("killing pid %d by force", pid);
+	}
+
+	return FALSE;
+}
+
+static gboolean kill_timeout(gpointer user_data)
+{
+	pid_t pid = GPOINTER_TO_INT(user_data);
+	if (pid > 0) {
+		if (kill(pid, SIGINT) == 0)
+			g_timeout_add_seconds(1, force_kill_timeout,
+					GINT_TO_POINTER(pid));
+	}
+
+	return FALSE;
+}
+
+static gboolean check_kill(gpointer user_data)
+{
+	pid_t pid = GPOINTER_TO_INT(user_data);
+	if (pid > 0) {
+		if (kill(pid, 0) == 0) {
+			connman_info("pid %d was not killed, "
+					"retrying after 2 sec", pid);
+			g_timeout_add_seconds(2, kill_timeout,
+					GINT_TO_POINTER(pid));
+		}
+	}
+
+	return FALSE;
+}
+
 /**
  * connman_task_stop:
  * @task: task structure
@@ -360,8 +398,12 @@ int connman_task_stop(struct connman_task *task)
 {
 	DBG("task %p", task);
 
-	if (task->pid > 0)
+	if (task->pid > 0) {
 		kill(task->pid, SIGTERM);
+
+		g_timeout_add_seconds(0, check_kill,
+				GINT_TO_POINTER(task->pid));
+	}
 
 	return 0;
 }
@@ -372,6 +414,7 @@ static DBusHandlerResult task_filter(DBusConnection *connection,
 	struct connman_task *task;
 	struct notify_data *notify;
 	const char *path, *member;
+	DBusMessage *reply = NULL;
 
 	if (dbus_message_get_type(message) != DBUS_MESSAGE_TYPE_METHOD_CALL)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -388,28 +431,31 @@ static DBusHandlerResult task_filter(DBusConnection *connection,
 	if (task == NULL)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
-	if (dbus_message_get_no_reply(message) == FALSE) {
-		DBusMessage *reply;
+	member = dbus_message_get_member(message);
+	if (member == NULL)
+		goto send_reply;
+
+	notify = g_hash_table_lookup(task->notify, member);
+	if (notify == NULL)
+		goto send_reply;
+
+	if (notify->func)
+		reply = notify->func(task, message, notify->data);
+
+send_reply:
+	if (dbus_message_get_no_reply(message) == FALSE &&
+						reply == NULL) {
 
 		reply = dbus_message_new_method_return(message);
 		if (reply == NULL)
 			return DBUS_HANDLER_RESULT_NEED_MEMORY;
+	}
 
+	if (reply != NULL) {
 		dbus_connection_send(connection, reply, NULL);
 
 		dbus_message_unref(reply);
 	}
-
-	member = dbus_message_get_member(message);
-	if (member == NULL)
-		return DBUS_HANDLER_RESULT_HANDLED;
-
-	notify = g_hash_table_lookup(task->notify, member);
-	if (notify == NULL)
-		return DBUS_HANDLER_RESULT_HANDLED;
-
-	if (notify->func)
-		notify->func(task, message, notify->data);
 
 	return DBUS_HANDLER_RESULT_HANDLED;
 }
@@ -425,7 +471,8 @@ int __connman_task_init(void)
 
 	dbus_connection_add_filter(connection, task_filter, NULL, NULL);
 
-	g_atomic_int_set(&task_counter, 0);
+	task_counter = 0;
+	__sync_synchronize();
 
 	task_hash = g_hash_table_new_full(g_str_hash, g_str_equal,
 							NULL, free_task);
