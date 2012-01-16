@@ -1,3 +1,6 @@
+ver 0.78.1:
+	Rebased for connman-stable
+
 ver 0.78:
 	Fix multiple issues with service connection states.
 	Fix multiple issues with technology handling.
