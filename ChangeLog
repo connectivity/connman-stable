@@ -1,3 +1,6 @@
+ver 0.78.2:
+	Backport ofono with CDMA support
+
 ver 0.78.1:
 	Rebased for connman-stable
 
