@@ -1,3 +1,8 @@
+ver 0.78.3:
+	Update ofono plugin.
+	Apply BMC fixes 24592, 23741, 23740, 24549, 24702, 24651, 24737,
+	24712, 24942, 24965 and 25026.
+
 ver 0.78.2:
 	Backport ofono with CDMA support
 
