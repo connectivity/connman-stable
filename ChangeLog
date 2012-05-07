@@ -1,3 +1,6 @@
+ver 0.78.4
+	Apply BMC fix 24943
+
 ver 0.78.3:
 	Update ofono plugin.
 	Apply BMC fixes 24592, 23741, 23740, 24549, 24702, 24651, 24737,
