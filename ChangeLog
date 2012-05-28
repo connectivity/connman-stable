@@ -1,3 +1,9 @@
+ver 0.78.5
+	Fix issue with rtnl origin
+	Fix issue with malformed hostname
+	Fix issue unreferencing wifi device when scanning
+	Apply BMC fix 25030
+
 ver 0.78.4
 	Apply BMC fix 24943
 
