@@ -483,6 +483,9 @@ static int wifi_scan(struct connman_device *device)
 	if (wifi->tethering == TRUE)
 		return 0;
 
+	if (connman_device_get_scanning(device) == TRUE)
+		return -EALREADY;
+
 	connman_device_ref(device);
 	ret = g_supplicant_interface_scan(wifi->interface, NULL,
 					scan_callback, device);
@@ -505,6 +508,9 @@ static int wifi_scan_fast(struct connman_device *device)
 
 	if (wifi->tethering == TRUE)
 		return 0;
+
+	if (connman_device_get_scanning(device) == TRUE)
+		return -EALREADY;
 
 	driver_max_ssids = g_supplicant_interface_get_max_scan_ssids(
 							wifi->interface);
